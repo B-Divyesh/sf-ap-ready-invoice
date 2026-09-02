@@ -13,7 +13,7 @@ Try the isolated sample at `/demo`. It loads Mara Vale Studio's invoice for Nort
 - Exportable receipt trails in CSV.
 - Encrypted tax and bank fields in SQLite.
 - A separate demo workspace with a 24-hour expiry and reset control.
-- A $19 monthly Pro checkout and license restore flow through Sociobot.
+- Status links and receipt tracking are available without a purchase while checkout registration is pending.
 
 AP-Ready Invoice does not process payments, replace bookkeeping, or impersonate a client's AP system.
 
@@ -35,9 +35,10 @@ For frontend hot reload, run `npm run dev` beside `npm run dev:server`.
 
 ```bash
 npm test
+npm run lint
 ```
 
-The command builds the frontend, runs Rust unit tests, starts the full server, and runs Playwright in Chromium. Claim tests are listed in `.factory/claims.json`. Playwright 1.58.2 is pinned.
+`npm test` builds the frontend, runs TypeScript, rustfmt, Clippy, Rust unit tests, and Playwright in Chromium. Claim tests are listed in `.factory/claims.json`. Playwright and its Axe adapter use the pinned 1.58.2 core.
 
 ## Container
 
@@ -52,9 +53,9 @@ The multi-stage image runs as a non-root user. `GET /health` returns the build S
 
 The factory builds the root `Dockerfile` and mounts durable product storage at `/data`. Do not deploy infrastructure from this repository. The production origin is `https://ap-ready-invoice.sociobot.in`.
 
-## Privacy and billing
+## Privacy
 
-The site loads no third-party fonts or scripts. Invoice data stays in the product's SQLite database. Sensitive fields use ChaCha20-Poly1305 encryption with a generated key persisted beside the database. The checkout and daily license verification call only the Sociobot billing API. See `/privacy` and `/terms` in the app.
+The site loads no third-party fonts or scripts. Invoice data stays in the product's SQLite database. Sensitive fields use ChaCha20-Poly1305 encryption with a generated key persisted beside the database. See `/privacy` and `/terms` in the app.
 
 ## Project notes
 

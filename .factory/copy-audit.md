@@ -9,7 +9,7 @@ Audit date: 2026-09-02. Words are split on spaces. UI labels and proper names ar
 | See a checked invoice and its next action. | 9 | Pass |
 | Sample data expires after 24 hours. | 6 | Pass |
 | Bank and tax fields are encrypted. | 7 | Pass |
-| Pro follow-through costs $19 per month. | 7 | Pass |
+| Receipt trails export as CSV. | 5 | Pass |
 | Check the packet before finance does. | 7 | Pass |
 | Know who acts next | 4 | Pass |
 | Every requirement becomes a visible check. | 6 | Pass |
@@ -24,9 +24,6 @@ Audit date: 2026-09-02. Words are split on spaces. UI labels and proper names ar
 | It never claims to be your client's AP system. | 9 | Pass |
 | Sensitive invoice fields are encrypted on the server. | 8 | Pass |
 | You can export the receipt trail as CSV. | 8 | Pass |
-| Preflight, printing, and CSV stay free. | 6 | Pass |
-| Pro adds status links and AP receipt tracking. | 8 | Pass |
-| Sociobot is the merchant of record. | 6 | Pass |
 
 No sentence exceeds 22 words. No sentence contains a banned term.
 

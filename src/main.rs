@@ -2,7 +2,7 @@ use axum::{
     extract::{ConnectInfo, Path, Request, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
 };
@@ -42,6 +42,7 @@ struct AppState {
     db: SqlitePool,
     cipher: Arc<ChaCha20Poly1305>,
     limits: Arc<DashMap<IpAddr, RateWindow>>,
+    index_html: Arc<String>,
 }
 
 #[derive(Clone)]
@@ -213,13 +214,18 @@ async fn main() {
         build_sha = BUILD_SHA,
         "configuration ready"
     );
+    let static_dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "frontend/dist".into());
+    let index = format!("{static_dir}/index.html");
     let state = AppState {
         db,
         cipher: Arc::new(ChaCha20Poly1305::new((&key).into())),
         limits: Arc::new(DashMap::new()),
+        index_html: Arc::new(
+            tokio::fs::read_to_string(&index)
+                .await
+                .expect("read frontend index"),
+        ),
     };
-    let static_dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "frontend/dist".into());
-    let index = format!("{static_dir}/index.html");
     let api = Router::new()
         .route("/workspaces", post(create_workspace))
         .route("/demo", post(create_demo))
@@ -245,7 +251,44 @@ async fn main() {
             }),
         )
         .nest("/api", api)
-        .fallback_service(ServeDir::new(&static_dir).fallback(ServeFile::new(index)))
+        .route("/", get(spa_page))
+        .route("/demo", get(spa_page))
+        .route("/app", get(spa_page))
+        .route("/pricing", get(spa_page))
+        .route("/privacy", get(spa_page))
+        .route("/terms", get(spa_page))
+        .route("/status/{token}", get(spa_page))
+        .route("/packet/{id}", get(spa_page))
+        .nest_service("/assets", ServeDir::new(format!("{static_dir}/assets")))
+        .route_service(
+            "/favicon.svg",
+            ServeFile::new(format!("{static_dir}/favicon.svg")),
+        )
+        .route_service(
+            "/apple-touch-icon.png",
+            ServeFile::new(format!("{static_dir}/apple-touch-icon.png")),
+        )
+        .route_service(
+            "/invoice-broadsheet-720.webp",
+            ServeFile::new(format!("{static_dir}/invoice-broadsheet-720.webp")),
+        )
+        .route_service(
+            "/invoice-broadsheet-1200.webp",
+            ServeFile::new(format!("{static_dir}/invoice-broadsheet-1200.webp")),
+        )
+        .route_service(
+            "/social-card.webp",
+            ServeFile::new(format!("{static_dir}/social-card.webp")),
+        )
+        .route_service(
+            "/robots.txt",
+            ServeFile::new(format!("{static_dir}/robots.txt")),
+        )
+        .route_service(
+            "/sitemap.xml",
+            ServeFile::new(format!("{static_dir}/sitemap.xml")),
+        )
+        .fallback(spa_not_found)
         .layer(middleware::from_fn(security_headers))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -268,6 +311,7 @@ async fn main() {
 }
 
 async fn security_headers(request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_owned();
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert(
@@ -283,8 +327,40 @@ async fn security_headers(request: Request, next: Next) -> Response {
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
     headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
-    headers.insert("content-security-policy", HeaderValue::from_static("default-src 'self'; connect-src 'self' https://api.sociobot.in; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self' https://api.sociobot.in; frame-ancestors 'none'"));
+    headers.insert("content-security-policy", HeaderValue::from_static("default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"));
+    if path.starts_with("/assets/") {
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    } else if matches!(
+        path.as_str(),
+        "/favicon.svg"
+            | "/apple-touch-icon.png"
+            | "/invoice-broadsheet-720.webp"
+            | "/invoice-broadsheet-1200.webp"
+            | "/social-card.webp"
+    ) {
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=604800"),
+        );
+    } else if headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"))
+    {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     response
+}
+
+async fn spa_page(State(state): State<AppState>) -> Html<String> {
+    Html((*state.index_html).clone())
+}
+
+async fn spa_not_found(State(state): State<AppState>) -> (StatusCode, Html<String>) {
+    (StatusCode::NOT_FOUND, Html((*state.index_html).clone()))
 }
 
 fn data_dir() -> PathBuf {
@@ -304,7 +380,8 @@ fn data_dir() -> PathBuf {
 /// lock can prevent the next revision from opening the database. Keep it as an evidence file and
 /// let SQLite initialise a new database; never touch a non-empty database or its journal.
 async fn recover_empty_database_journal(db_path: &FsPath) -> Result<bool, std::io::Error> {
-    let empty_database = matches!(tokio::fs::metadata(db_path).await, Ok(metadata) if metadata.len() == 0);
+    let empty_database =
+        matches!(tokio::fs::metadata(db_path).await, Ok(metadata) if metadata.len() == 0);
     let journal = PathBuf::from(format!("{}-journal", db_path.display()));
     if !empty_database || tokio::fs::metadata(&journal).await.is_err() {
         return Ok(false);
@@ -386,7 +463,10 @@ async fn open_database(options: SqliteConnectOptions) -> SqlitePool {
 }
 
 fn migration_is_locked(error: &sqlx::migrate::MigrateError) -> bool {
-    error.to_string().to_ascii_lowercase().contains("database is locked")
+    error
+        .to_string()
+        .to_ascii_lowercase()
+        .contains("database is locked")
 }
 
 async fn shutdown() {
@@ -848,6 +928,13 @@ fn inflate(state: &AppState, r: RawInvoice, p: &Profile) -> Result<Invoice, AppE
 }
 
 fn make_checks(p: &Profile, i: &InvoiceInput) -> Vec<Check> {
+    let dates_ready = match (
+        parse_calendar_date(&i.issue_date),
+        parse_calendar_date(&i.due_date),
+    ) {
+        (Some(issue), Some(due)) => due >= issue,
+        _ => false,
+    };
     vec![
         Check {
             key: "identity",
@@ -864,8 +951,8 @@ fn make_checks(p: &Profile, i: &InvoiceInput) -> Vec<Check> {
         Check {
             key: "dates",
             label: "Issue and due dates",
-            ready: !i.issue_date.is_empty() && !i.due_date.is_empty() && i.due_date >= i.issue_date,
-            help: "Set a due date on or after the issue date.",
+            ready: dates_ready,
+            help: "Use real calendar dates, with the due date on or after the issue date.",
         },
         Check {
             key: "po",
@@ -908,7 +995,13 @@ fn validate_invoice(i: &InvoiceInput) -> Result<(), AppError> {
     if !["USD", "GBP", "EUR", "CAD", "AUD", "INR"].contains(&i.currency.as_str()) {
         return Err(AppError::BadRequest("Choose a supported currency.".into()));
     }
-    if i.due_date < i.issue_date {
+    let issue_date = parse_calendar_date(&i.issue_date).ok_or_else(|| {
+        AppError::BadRequest("Enter a real issue date in YYYY-MM-DD format.".into())
+    })?;
+    let due_date = parse_calendar_date(&i.due_date).ok_or_else(|| {
+        AppError::BadRequest("Enter a real due date in YYYY-MM-DD format.".into())
+    })?;
+    if due_date < issue_date {
         return Err(AppError::BadRequest(
             "The due date must be on or after the issue date.".into(),
         ));
@@ -919,6 +1012,41 @@ fn validate_invoice(i: &InvoiceInput) -> Result<(), AppError> {
         ));
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct CalendarDate {
+    year: u16,
+    month: u8,
+    day: u8,
+}
+
+fn parse_calendar_date(value: &str) -> Option<CalendarDate> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    if !bytes
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let year = value[0..4].parse::<u16>().ok()?;
+    let month = value[5..7].parse::<u8>().ok()?;
+    let day = value[8..10].parse::<u8>().ok()?;
+    if year == 0 || !(1..=12).contains(&month) {
+        return None;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (day >= 1 && day <= days).then_some(CalendarDate { year, month, day })
 }
 fn secret_token() -> String {
     let mut b = [0u8; 32];
@@ -996,7 +1124,7 @@ mod tests {
     }
     #[test]
     fn validates_dates() {
-        let i = InvoiceInput {
+        let mut i = InvoiceInput {
             number: "1".into(),
             amount_cents: 100,
             currency: "USD".into(),
@@ -1007,7 +1135,53 @@ mod tests {
             tax_id: "".into(),
             bank_details: "".into(),
         };
-        assert!(validate_invoice(&i).is_err())
+        assert!(validate_invoice(&i).is_err());
+
+        i.issue_date = "not-a-date".into();
+        i.due_date = "zzzz".into();
+        assert!(
+            matches!(validate_invoice(&i), Err(AppError::BadRequest(message)) if message.contains("issue date"))
+        );
+
+        i.issue_date = "2026-02-30".into();
+        i.due_date = "2026-03-01".into();
+        assert!(validate_invoice(&i).is_err());
+
+        i.issue_date = "2024-02-29".into();
+        i.due_date = "2024-02-29".into();
+        assert!(validate_invoice(&i).is_ok());
+    }
+
+    #[test]
+    fn preflight_never_marks_malformed_dates_ready() {
+        let p = Profile {
+            freelancer_name: "A".into(),
+            company_name: "B".into(),
+            ap_email: "a@b.com".into(),
+            billing_address: "x".into(),
+            po_required: false,
+            tax_required: false,
+            bank_required: false,
+            escalation_days: 5,
+        };
+        let i = InvoiceInput {
+            number: "1".into(),
+            amount_cents: 100,
+            currency: "USD".into(),
+            issue_date: "not-a-date".into(),
+            due_date: "zzzz".into(),
+            description: "Work".into(),
+            po_number: "".into(),
+            tax_id: "".into(),
+            bank_details: "".into(),
+        };
+        assert!(
+            !make_checks(&p, &i)
+                .iter()
+                .find(|check| check.key == "dates")
+                .unwrap()
+                .ready
+        );
     }
 
     #[test]
@@ -1019,7 +1193,9 @@ mod tests {
         let unsupported = std::io::Error::from_raw_os_error(95); // EOPNOTSUPP on Linux
         assert!(permissions_error_is_nonfatal(&access_denied));
         assert!(permissions_error_is_nonfatal(&unsupported));
-        assert!(!permissions_error_is_nonfatal(&std::io::Error::from_raw_os_error(5)));
+        assert!(!permissions_error_is_nonfatal(
+            &std::io::Error::from_raw_os_error(5)
+        ));
     }
 
     #[test]
@@ -1049,8 +1225,16 @@ mod tests {
         let preserved = std::fs::read_dir(directory.path())
             .unwrap()
             .filter_map(Result::ok)
-            .find(|entry| entry.file_name().to_string_lossy().contains("journal.recovery-"))
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("journal.recovery-")
+            })
             .unwrap();
-        assert_eq!(std::fs::read(preserved.path()).unwrap(), b"incomplete first migration");
+        assert_eq!(
+            std::fs::read(preserved.path()).unwrap(),
+            b"incomplete first migration"
+        );
     }
 }

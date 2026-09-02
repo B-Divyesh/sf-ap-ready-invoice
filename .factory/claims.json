@@ -25,7 +25,7 @@
     "claim": "Builds a printable invoice and prepared email package.",
     "where": "landing product description, workspace packet actions, README",
     "test": "npm test -- --grep @claim:invoice-packet",
-    "sandbox": "demo invoice; assert the print action and email copy, then inspect the prepared finance email and status URL"
+    "sandbox": "demo invoice; open the packet route, assert its external stylesheet and computed print design with no console error, invoke its print action, and inspect copied email and status URL"
   },
   {
     "id": "status-receipt",
@@ -47,5 +47,12 @@
     "where": "privacy page",
     "test": "npm test -- --grep @claim:no-tracking",
     "sandbox": "fresh demo browser context; record every request through a preflight and assert same-origin only"
+  },
+  {
+    "id": "purchase-disabled",
+    "claim": "No checkout or paid gate is shown while external registration is pending.",
+    "where": "pricing page, README",
+    "test": "npm test -- --grep @claim:purchase-disabled",
+    "sandbox": "landing, demo, and pricing routes; assert there is no checkout URL, paid price, or disabled status action"
   }
 ]

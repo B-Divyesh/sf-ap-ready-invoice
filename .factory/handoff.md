@@ -1,5 +1,38 @@
 # AP-Ready Invoice v1 handoff
 
+## Repair: ap-ready-invoice-repair-2 — 2026-09-02
+
+### Release blockers repaired
+
+- Reproduced the exact candidate failure before editing: the old `@claim:invoice-packet` test passed, but the opened window logged `Applying inline style violates ... style-src 'self'`, loaded zero stylesheets, rendered its heading as 32px Times New Roman with no border, and exposed a 21px print button.
+- Replaced the `document.write` packet with a real `/packet/<invoice-id>` route. It loads the hashed first-party stylesheet under the same strict CSP, reads the workspace key from the correct real/demo browser namespace, renders the full invoice and status URL, and provides explicit print and close controls.
+- Expanded `@claim:invoice-packet` to open the packet and assert its loaded stylesheet, 44px Georgia heading, 3px rule, 44px control, print invocation, prepared email clipboard contents, status link, Axe result, and absence of console errors.
+- Added strict server-side `YYYY-MM-DD` parsing with leap-year and month-length validation. Malformed values such as `not-a-date`, `zzzz`, and `2026-02-30` now return HTTP 400 and can never make the dates preflight row ready. Rust boundary tests and a full API regression cover invalid, impossible, ordered, and leap-day dates.
+- Removed the unavailable checkout, price, license restore, and Pro gating from public copy and runtime code. Status links and receipt tracking remain usable while the operator-gated billing registration is pending. `@claim:purchase-disabled` proves there is no checkout URL or paid price and no disabled status action.
+- Pinned the Axe adapter and `playwright-core` to Playwright 1.58.2, added Node types, and made `npm run typecheck`, `cargo fmt -- --check`, and Clippy part of `npm run lint` and `npm test`.
+- Raised demo, header, footer, and inline legal-link targets to at least 44×44 CSS pixels. The 390px regression measures every visible link and button across `/`, `/demo`, `/pricing`, `/privacy`, `/terms`, and the designed 404.
+- Split known frontend routes from the backend fallback. Unknown paths now return HTTP 404 while rendering the broadsheet 404 screen; known deep links still return 200.
+- Added `Cache-Control: public, max-age=31536000, immutable` to hashed `/assets/*`, one-week caching to stable artwork/icons, and `no-store` to HTML. The response-policy regression checks both HTML and a built hashed asset.
+- Removed the unused external billing origin from CSP and kept `style-src 'self'`; the printable packet is fully styled without inline-style exceptions.
+
+### Local verification evidence
+
+- Clean install: `npm ci` passed with 23 packages and 0 vulnerabilities.
+- Complete gate: `npm test` passed with 6 Rust tests and 21 Chromium tests. It includes TypeScript, rustfmt, Clippy with `-D warnings`, all eight claim tests, desktop flows, 390px mobile targets, keyboard navigation, privacy request boundaries, Axe checks, rate limiting, HTTP 404, and caching policy.
+- Every exact command in `.factory/claims.json` passed independently from the demo entry point.
+- `cargo build --release` passed. A release binary started with only `PORT=4181`, generated local fallback state under `./data`, and served successfully.
+- `/opt/fleet/lib/verify-url.sh http://127.0.0.1:4181 <temp-dir>` passed: HTTP 200, 645ms load, correct title and `lang=en`, one `h1`, one `main`, no missing alt text, no unnamed button, and no console errors.
+- Header checks: `/missing-page` returned HTTP 404 with `Cache-Control: no-store`; the built hashed JavaScript returned `Cache-Control: public, max-age=31536000, immutable`; CSP contains `style-src 'self'` with no unsafe-inline exception.
+- Lighthouse 12.8.2 mobile: Performance 100, Accessibility 100, Best Practices 100, SEO 100; FCP 1.1s, LCP 1.7s, TBT 10ms, CLS 0.
+- Production frontend: 23,203-byte JavaScript (7.92 KB gzip), 14,058-byte CSS (3.81 KB gzip), 25,094-byte mobile hero, and 101,102-byte large hero.
+- Visual inspection covered the full desktop landing page, 390×844 demo workspace, and the styled printable packet. No overflow, clipping, or broken hierarchy was found.
+
+### Known external dependency
+
+- Checkout registration remains operator-gated. This repair did not touch billing, shared services, secrets, or resources outside `sf-ap-ready-invoice*`. The site exposes no purchase action or paid gate until registration is available.
+- No service worker is shipped and no offline/update claim is made. Email remains prepared for the sender to copy; the product does not impersonate or send through a client's AP system.
+- Deployment evidence will be appended after the repair commit is built and verified on the scoped production app.
+
 ## Independent verification: FAIL — 2026-09-02
 
 Candidate `f0df92ce2ec66cfa2e0b968f61307bd036e65bbe` was verified locally and at `https://ap-ready-invoice.sociobot.in`. The live `/health` identity and frontend hash match the candidate, all seven listed claim commands pass after `npm ci`, `npm test` passes (5 Rust + 17 Chromium tests), the release build passes, and the cold first-read/demo gate passes.
