@@ -15,7 +15,7 @@ use dashmap::DashMap;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
     FromRow, SqlitePool,
 };
 use std::{
@@ -189,14 +189,18 @@ async fn main() {
     let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
         .unwrap()
         .create_if_missing(true)
-        .foreign_keys(true);
+        .foreign_keys(true)
+        // Azure Files is a network filesystem. DELETE journaling and a longer busy timeout avoid
+        // stale lock races while a replacement revision adopts the durable database.
+        .journal_mode(SqliteJournalMode::Delete)
+        .busy_timeout(Duration::from_secs(60));
     let db = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)
         .await
         .expect("open database");
     let database_permissions = set_private_permissions(&db_path).await;
-    sqlx::migrate!().run(&db).await.expect("run migrations");
+    run_migrations(&db).await;
     let (key, key_source) = load_or_create_key(&data_dir.join("encryption.key"))
         .await
         .expect("load encryption key");
@@ -332,6 +336,26 @@ async fn set_private_permissions(path: &FsPath) -> bool {
 fn permissions_error_is_nonfatal(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::PermissionDenied
         || matches!(error.raw_os_error(), Some(1 | 95))
+}
+
+async fn run_migrations(db: &SqlitePool) {
+    const ATTEMPTS: u32 = 4;
+    for attempt in 1..=ATTEMPTS {
+        match sqlx::migrate!().run(db).await {
+            Ok(()) => return,
+            Err(error) if migration_is_locked(&error) && attempt < ATTEMPTS => {
+                let wait = Duration::from_secs(u64::from(attempt) * 5);
+                warn!(attempt, wait_seconds = wait.as_secs(), error = %error, "database is temporarily locked; retrying migrations");
+                tokio::time::sleep(wait).await;
+            }
+            Err(error) => panic!("run migrations: {error}"),
+        }
+    }
+    unreachable!("migration loop returns or panics")
+}
+
+fn migration_is_locked(error: &sqlx::migrate::MigrateError) -> bool {
+    error.to_string().to_ascii_lowercase().contains("database is locked")
 }
 
 async fn shutdown() {
@@ -965,5 +989,17 @@ mod tests {
         assert!(permissions_error_is_nonfatal(&access_denied));
         assert!(permissions_error_is_nonfatal(&unsupported));
         assert!(!permissions_error_is_nonfatal(&std::io::Error::from_raw_os_error(5)));
+    }
+
+    #[test]
+    fn retries_only_a_temporary_sqlite_lock_during_startup() {
+        let locked = sqlx::migrate::MigrateError::Execute(sqlx::Error::Protocol(
+            "database is locked".into(),
+        ));
+        let invalid = sqlx::migrate::MigrateError::Execute(sqlx::Error::Protocol(
+            "database disk image is malformed".into(),
+        ));
+        assert!(migration_is_locked(&locked));
+        assert!(!migration_is_locked(&invalid));
     }
 }
