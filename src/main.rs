@@ -195,6 +195,9 @@ async fn main() {
         .foreign_keys(true)
         // Azure Files is a network filesystem. DELETE journaling and a longer busy timeout avoid
         // stale lock races while a replacement revision adopts the durable database.
+        // `unix-excl` is safe here because the deployment pins one replica; it avoids SMB's
+        // unreliable POSIX byte-range lock upgrades during SQLite schema creation.
+        .vfs("unix-excl")
         .journal_mode(SqliteJournalMode::Delete)
         .locking_mode(SqliteLockingMode::Exclusive)
         .busy_timeout(Duration::from_secs(60));
