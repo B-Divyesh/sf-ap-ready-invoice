@@ -195,14 +195,18 @@ async fn main() {
         .connect_with(options)
         .await
         .expect("open database");
-    set_private_permissions(&db_path)
-        .await
-        .expect("secure database permissions");
+    let database_permissions = set_private_permissions(&db_path).await;
     sqlx::migrate!().run(&db).await.expect("run migrations");
     let (key, key_source) = load_or_create_key(&data_dir.join("encryption.key"))
         .await
         .expect("load encryption key");
-    info!(database = %db_path.display(), encryption_key = key_source, build_sha = BUILD_SHA, "configuration ready");
+    info!(
+        database = %db_path.display(),
+        database_permissions,
+        encryption_key = key_source,
+        build_sha = BUILD_SHA,
+        "configuration ready"
+    );
     let state = AppState {
         db,
         cipher: Arc::new(ChaCha20Poly1305::new((&key).into())),
@@ -292,7 +296,7 @@ fn data_dir() -> PathBuf {
 async fn load_or_create_key(path: &FsPath) -> Result<([u8; 32], &'static str), std::io::Error> {
     if let Ok(bytes) = tokio::fs::read(path).await {
         if bytes.len() == 32 {
-            set_private_permissions(path).await?;
+            set_private_permissions(path).await;
             let mut key = [0; 32];
             key.copy_from_slice(&bytes);
             return Ok((key, "persisted"));
@@ -301,17 +305,33 @@ async fn load_or_create_key(path: &FsPath) -> Result<([u8; 32], &'static str), s
     let mut key = [0; 32];
     OsRng.fill_bytes(&mut key);
     tokio::fs::write(path, key).await?;
-    set_private_permissions(path).await?;
+    set_private_permissions(path).await;
     Ok((key, "generated"))
 }
 
-async fn set_private_permissions(path: &FsPath) -> Result<(), std::io::Error> {
+/// Azure Files mounts can reject chmod even though their mount ACLs allow reads and writes.
+/// A rejected mode change must not prevent the service from starting and serving its configured
+/// port; the durable share remains the source of access control in that case.
+async fn set_private_permissions(path: &FsPath) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
+        match tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await {
+            Ok(()) => return true,
+            Err(error) if permissions_error_is_nonfatal(&error) => {
+                warn!(path = %path.display(), error = %error, "filesystem does not support POSIX file modes; using mounted share access control");
+            }
+            Err(error) => {
+                warn!(path = %path.display(), error = %error, "could not set private file mode; continuing with filesystem access control");
+            }
+        }
     }
-    Ok(())
+    false
+}
+
+fn permissions_error_is_nonfatal(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(1 | 95))
 }
 
 async fn shutdown() {
@@ -933,5 +953,17 @@ mod tests {
             bank_details: "".into(),
         };
         assert!(validate_invoice(&i).is_err())
+    }
+
+    #[test]
+    fn allows_azure_files_style_mode_errors_without_blocking_startup() {
+        let access_denied = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "operation not permitted on mounted share",
+        );
+        let unsupported = std::io::Error::from_raw_os_error(95); // EOPNOTSUPP on Linux
+        assert!(permissions_error_is_nonfatal(&access_denied));
+        assert!(permissions_error_is_nonfatal(&unsupported));
+        assert!(!permissions_error_is_nonfatal(&std::io::Error::from_raw_os_error(5)));
     }
 }

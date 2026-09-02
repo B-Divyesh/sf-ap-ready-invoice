@@ -1,5 +1,17 @@
 # AP-Ready Invoice v1 handoff
 
+## Repair: ap-ready-invoice-repair-1
+
+- Repaired the failed `a539cb2929044ebf3236b28e96d3943a70f9a924` container revision. The app was exiting during startup before it could bind `PORT`: Azure Files can reject POSIX `chmod` calls on the `/data` mount, and the previous code treated that expected mount capability error as fatal.
+- `/data` is unchanged and remains the durable SQLite/key location. File-mode attempts now log whether they succeeded and continue with the Azure Files mount ACL when POSIX modes are unavailable. The startup log reports the selected database, key source, build identity, and listener address without exposing secret material.
+- Added Rust regression coverage for the Azure Files `PermissionDenied`/`EOPNOTSUPP` mode-change path. It confirms that this mount behavior cannot block server startup again.
+
+### Repair verification before deployment
+
+- `npm test` passed: Vite production build, 3 Rust unit tests, and 17 Chromium tests (claims, demo isolation, privacy request boundary, mobile/keyboard, Axe accessibility, and forwarded-IP rate limiting).
+- `cargo build --release` passed. A clean temporary data directory launched the release server on `PORT=18080`; `GET /health` and `GET /` both returned HTTP 200.
+- `/opt/fleet/lib/verify-url.sh http://127.0.0.1:18081 <temp-evidence-dir>` passed: HTTP 200, `lang=en`, one `h1`, `main`, no missing image alt text or unlabeled buttons, no console errors; local load was 640 ms. The existing Playwright Axe suite found no serious or critical violations.
+
 ## What shipped
 
 - A Rust 2021 Axum service on `PORT` with SQLite migrations, JSON logs, graceful shutdown, secure response headers, forwarded-IP rate limiting, and `GET /health` build identity.
