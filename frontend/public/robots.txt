@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://ap-ready-invoice.sociobot.in/sitemap.xml

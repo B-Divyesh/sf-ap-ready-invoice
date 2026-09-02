@@ -1,0 +1,21 @@
+{
+  "name": "ap-ready-invoice",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --config frontend/vite.config.ts",
+    "dev:server": "cargo run",
+    "build": "vite build --config frontend/vite.config.ts",
+    "build:server": "cargo build --release",
+    "start:test": "PORT=4173 STATIC_DIR=frontend/dist cargo run",
+    "test": "npm run build && cargo test && playwright test",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "1.58.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  }
+}

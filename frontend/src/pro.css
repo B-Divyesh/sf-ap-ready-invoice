@@ -1,0 +1,6 @@
+.pro-lock {
+  margin-top: 16px;
+  padding: 12px;
+  border-left: 5px solid var(--proof);
+  font-size: 13px;
+}

@@ -1,0 +1,8 @@
+.git
+node_modules
+target
+frontend/dist
+test-results
+playwright-report
+data
+assets/src
