@@ -15,7 +15,7 @@ use dashmap::DashMap;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteLockingMode, SqlitePoolOptions},
     FromRow, SqlitePool,
 };
 use std::{
@@ -196,6 +196,7 @@ async fn main() {
         // Azure Files is a network filesystem. DELETE journaling and a longer busy timeout avoid
         // stale lock races while a replacement revision adopts the durable database.
         .journal_mode(SqliteJournalMode::Delete)
+        .locking_mode(SqliteLockingMode::Exclusive)
         .busy_timeout(Duration::from_secs(60));
     let db = open_database(options).await;
     let database_permissions = set_private_permissions(&db_path).await;
@@ -359,9 +360,9 @@ fn permissions_error_is_nonfatal(error: &std::io::Error) -> bool {
 async fn open_database(options: SqliteConnectOptions) -> SqlitePool {
     const ATTEMPTS: u32 = 4;
     for attempt in 1..=ATTEMPTS {
-        // A single connection is deliberate: this product has one SQLite writer on an Azure
-        // Files share. On a failed migration, closing this pool releases its journal/lock before
-        // the next attempt instead of making the process wait on its own failed connection.
+        // A single exclusive connection is deliberate: this product has one SQLite writer on an
+        // Azure Files share. On a failed migration, closing this pool releases its journal/lock
+        // before the next attempt instead of making the process wait on its own failed connection.
         let db = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(options.clone())
