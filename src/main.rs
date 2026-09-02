@@ -190,19 +190,9 @@ async fn main() {
     recover_empty_database_journal(&db_path)
         .await
         .expect("recover incomplete empty database");
-    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
-        .unwrap()
-        .create_if_missing(true)
-        .foreign_keys(true)
-        // Azure Files is a network filesystem. DELETE journaling and a longer busy timeout avoid
-        // stale lock races while a replacement revision adopts the durable database.
-        // `unix-excl` is safe here because the deployment pins one replica; it avoids SMB's
-        // unreliable POSIX byte-range lock upgrades during SQLite schema creation.
-        .vfs("unix-excl")
-        .journal_mode(SqliteJournalMode::Delete)
-        .locking_mode(SqliteLockingMode::Exclusive)
-        .busy_timeout(Duration::from_secs(60));
-    let db = open_database(options).await;
+    let migration_options = sqlite_connect_options(&db_path, true);
+    let runtime_options = sqlite_connect_options(&db_path, false);
+    let db = open_database(migration_options, runtime_options).await;
     let database_permissions = set_private_permissions(&db_path).await;
     let (key, key_source) = load_or_create_key(&data_dir.join("encryption.key"))
         .await
@@ -437,7 +427,31 @@ fn permissions_error_is_nonfatal(error: &std::io::Error) -> bool {
         || matches!(error.raw_os_error(), Some(1 | 95))
 }
 
-async fn open_database(options: SqliteConnectOptions) -> SqlitePool {
+fn sqlite_connect_options(db_path: &FsPath, for_migration: bool) -> SqliteConnectOptions {
+    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
+        .unwrap()
+        .create_if_missing(true)
+        .foreign_keys(true)
+        // Azure Files is a network filesystem. DELETE journaling and a longer busy timeout avoid
+        // stale lock races while a replacement revision adopts the durable database.
+        .journal_mode(SqliteJournalMode::Delete)
+        .busy_timeout(Duration::from_secs(60));
+    if for_migration {
+        // Schema changes use a single-writer VFS so SMB never has to upgrade POSIX byte-range
+        // locks. This pool is closed immediately after migrations; retaining this mode at runtime
+        // would prevent the next container revision from becoming ready during a rolling deploy.
+        options
+            .vfs("unix-excl")
+            .locking_mode(SqliteLockingMode::Exclusive)
+    } else {
+        options.locking_mode(SqliteLockingMode::Normal)
+    }
+}
+
+async fn open_database(
+    migration_options: SqliteConnectOptions,
+    runtime_options: SqliteConnectOptions,
+) -> SqlitePool {
     const ATTEMPTS: u32 = 4;
     for attempt in 1..=ATTEMPTS {
         // A single exclusive connection is deliberate: this product has one SQLite writer on an
@@ -445,28 +459,66 @@ async fn open_database(options: SqliteConnectOptions) -> SqlitePool {
         // before the next attempt instead of making the process wait on its own failed connection.
         let db = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect_with(options.clone())
-            .await
-            .expect("open database");
+            .connect_with(migration_options.clone())
+            .await;
+        let db = match db {
+            Ok(db) => db,
+            Err(error)
+                if startup_database_error_is_temporary(&error.to_string())
+                    && attempt < ATTEMPTS =>
+            {
+                wait_for_database(attempt, &error).await;
+                continue;
+            }
+            Err(error) => panic!("open database for migrations: {error}"),
+        };
         match sqlx::migrate!().run(&db).await {
-            Ok(()) => return db,
+            Ok(()) => {
+                db.close().await;
+                break;
+            }
             Err(error) if migration_is_locked(&error) && attempt < ATTEMPTS => {
                 db.close().await;
-                let wait = Duration::from_secs(u64::from(attempt) * 5);
-                warn!(attempt, wait_seconds = wait.as_secs(), error = %error, "database is temporarily locked; retrying migrations");
-                tokio::time::sleep(wait).await;
+                wait_for_database(attempt, &error).await;
             }
             Err(error) => panic!("run migrations: {error}"),
         }
     }
-    unreachable!("migration loop returns or panics")
+
+    for attempt in 1..=ATTEMPTS {
+        match SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(runtime_options.clone())
+            .await
+        {
+            Ok(db) => return db,
+            Err(error)
+                if startup_database_error_is_temporary(&error.to_string())
+                    && attempt < ATTEMPTS =>
+            {
+                wait_for_database(attempt, &error).await;
+            }
+            Err(error) => panic!("open runtime database: {error}"),
+        }
+    }
+    unreachable!("database startup loops return or panic")
 }
 
 fn migration_is_locked(error: &sqlx::migrate::MigrateError) -> bool {
-    error
-        .to_string()
-        .to_ascii_lowercase()
-        .contains("database is locked")
+    startup_database_error_is_temporary(&error.to_string())
+}
+
+fn startup_database_error_is_temporary(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("database is locked")
+        || message.contains("pool timed out")
+        || message.contains("pooltimedout")
+}
+
+async fn wait_for_database(attempt: u32, error: &impl std::fmt::Display) {
+    let wait = Duration::from_secs(u64::from(attempt) * 5);
+    warn!(attempt, wait_seconds = wait.as_secs(), error = %error, "database is temporarily unavailable; retrying startup");
+    tokio::time::sleep(wait).await;
 }
 
 async fn shutdown() {
@@ -1208,6 +1260,50 @@ mod tests {
         ));
         assert!(migration_is_locked(&locked));
         assert!(!migration_is_locked(&invalid));
+        assert!(startup_database_error_is_temporary("PoolTimedOut"));
+        assert!(!startup_database_error_is_temporary(
+            "database disk image is malformed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn runtime_pool_releases_exclusive_migration_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("rolling.sqlite3");
+        let migration = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlite_connect_options(&database, true))
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE deployment_probe(id INTEGER PRIMARY KEY)")
+            .execute(&migration)
+            .await
+            .unwrap();
+        migration.close().await;
+
+        let first_revision = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlite_connect_options(&database, false))
+            .await
+            .unwrap();
+        let locking_mode: String = sqlx::query_scalar("PRAGMA locking_mode")
+            .fetch_one(&first_revision)
+            .await
+            .unwrap();
+        assert_eq!(locking_mode, "normal");
+
+        let next_revision = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlite_connect_options(&database, false))
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deployment_probe")
+            .fetch_one(&next_revision)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+        first_revision.close().await;
+        next_revision.close().await;
     }
 
     #[tokio::test]

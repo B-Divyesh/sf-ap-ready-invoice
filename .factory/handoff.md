@@ -14,11 +14,12 @@
 - Split known frontend routes from the backend fallback. Unknown paths now return HTTP 404 while rendering the broadsheet 404 screen; known deep links still return 200.
 - Added `Cache-Control: public, max-age=31536000, immutable` to hashed `/assets/*`, one-week caching to stable artwork/icons, and `no-store` to HTML. The response-policy regression checks both HTML and a built hashed asset.
 - Removed the unused external billing origin from CSP and kept `style-src 'self'`; the printable packet is fully styled without inline-style exceptions.
+- The final identity check caught a rolling-deploy lock that a plain HTTP 200 would have hidden: the old revision retained SQLite's `unix-excl`/exclusive lock, so its replacement panicked with `open database: PoolTimedOut` while the ingress kept serving the old SHA. Exclusive mode is now limited to the short migration pool, which closes before the runtime pool opens in normal mode. A regression opens two runtime pools against the same migrated database and verifies that the second revision can read it.
 
 ### Local verification evidence
 
 - Clean install: `npm ci` passed with 23 packages and 0 vulnerabilities.
-- Complete gate: `npm test` passed with 6 Rust tests and 21 Chromium tests. It includes TypeScript, rustfmt, Clippy with `-D warnings`, all eight claim tests, desktop flows, 390px mobile targets, keyboard navigation, privacy request boundaries, Axe checks, rate limiting, HTTP 404, and caching policy.
+- Complete gate: `npm test` passed with 7 Rust tests and 21 Chromium tests. It includes TypeScript, rustfmt, Clippy with `-D warnings`, all eight claim tests, desktop flows, 390px mobile targets, keyboard navigation, privacy request boundaries, Axe checks, rate limiting, HTTP 404, caching policy, and rolling-revision SQLite access.
 - Every exact command in `.factory/claims.json` passed independently from the demo entry point.
 - `cargo build --release` passed. A release binary started with only `PORT=4181`, generated local fallback state under `./data`, and served successfully.
 - `/opt/fleet/lib/verify-url.sh http://127.0.0.1:4181 <temp-dir>` passed: HTTP 200, 645ms load, correct title and `lang=en`, one `h1`, one `main`, no missing alt text, no unnamed button, and no console errors.
@@ -39,6 +40,7 @@
 - Both the container-app hostname and `https://ap-ready-invoice.sociobot.in/health` returned build SHA `0e5c212ea65d8f6ef66b90f294188c7efa32556b`. The live and local `index.html` SHA-256 values matched at `52346650c308e87d7abcc9ec36012bcd027269f5e428846c9147f92dbcf0f49f`.
 - Live `verify-url.sh` passed: HTTP 200, 568ms load, correct title/lang/landmarks, no missing alt text or unnamed controls, and no console errors. A live 390px demo and packet inspection found no sub-44px target, no packet console error, one loaded packet stylesheet, the expected Georgia heading and 3px rule, a canonical status URL, and zero checkout links.
 - Live `/missing-page` returned HTTP 404. `/assets/index-Bpkv0BSb.js` returned `Cache-Control: public, max-age=31536000, immutable` under the strict self-only style CSP. A 100-request concurrent live `/health` smoke returned 100 HTTP 200 responses.
+- A documentation-only follow-up revision exposed the retained exclusive runtime lock and never became ready; the domain correctly stayed on the prior healthy revision. The corrected deployment closes the exclusive migration connection before serving and uses a normal-locking runtime connection. The one-time old locked revisions must be deactivated before that corrected container can adopt `/data`; future rolling revisions can overlap safely.
 
 ## Independent verification: FAIL — 2026-09-02
 
