@@ -2,13 +2,13 @@
 
 ## Repair: ap-ready-invoice-repair-1
 
-- Repaired the failed `a539cb2929044ebf3236b28e96d3943a70f9a924` container revision. Product revision logs showed two Azure Files startup conditions before the listener could bind `PORT`: POSIX `chmod` returned `Operation not permitted (os error 1)`, then SQLite migration returned `database is locked` after its 5-second default wait.
+- Repaired the failed `a539cb2929044ebf3236b28e96d3943a70f9a924` container revision. Product revision logs showed two Azure Files startup conditions before the listener could bind `PORT`: POSIX `chmod` returned `Operation not permitted (os error 1)`, then SQLite migration returned `database is locked` after its 5-second default wait. The failed first migration left a zero-byte database and rollback journal; the journal is now renamed in place as recovery evidence (never deleted) before SQLite initialises a fresh empty database.
 - `/data` is unchanged and remains the durable SQLite/key location. File-mode attempts now log whether they succeeded and continue with the Azure Files mount ACL when POSIX modes are unavailable. The startup log reports the selected database, key source, build identity, and listener address without exposing secret material.
-- Added Rust regression coverage for Azure Files `PermissionDenied`/`EOPNOTSUPP` mode-change handling and temporary SQLite lock classification. SQLite now uses DELETE journaling, a 60-second busy timeout, and four migration attempts with bounded backoff; every failed attempt closes its one-connection pool first, so it cannot wait on its own journal lock while a replacement revision adopts the durable database.
+- Added Rust regression coverage for Azure Files `PermissionDenied`/`EOPNOTSUPP` mode-change handling, temporary SQLite lock classification, and preservation of a stale journal beside a zero-byte database. SQLite now uses DELETE journaling, a 60-second busy timeout, and four migration attempts with bounded backoff; every failed attempt closes its one-connection pool first, so it cannot wait on its own journal lock while a replacement revision adopts the durable database.
 
 ### Repair verification before deployment
 
-- `npm test` passed: Vite production build, 4 Rust unit tests, and 17 Chromium tests (claims, demo isolation, privacy request boundary, mobile/keyboard, Axe accessibility, and forwarded-IP rate limiting).
+- `npm test` passed: Vite production build, 5 Rust unit tests, and 17 Chromium tests (claims, demo isolation, privacy request boundary, mobile/keyboard, Axe accessibility, and forwarded-IP rate limiting).
 - `cargo build --release` passed. A clean temporary data directory launched the release server on `PORT=18080`; `GET /health` and `GET /` both returned HTTP 200.
 - `/opt/fleet/lib/verify-url.sh http://127.0.0.1:18081 <temp-evidence-dir>` passed: HTTP 200, `lang=en`, one `h1`, `main`, no missing image alt text or unlabeled buttons, no console errors; local load was 640 ms. The existing Playwright Axe suite found no serious or critical violations.
 

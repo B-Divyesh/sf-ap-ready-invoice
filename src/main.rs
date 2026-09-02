@@ -186,6 +186,9 @@ async fn main() {
         .await
         .expect("create data directory");
     let db_path = data_dir.join("ap-ready-invoice.sqlite3");
+    recover_empty_database_journal(&db_path)
+        .await
+        .expect("recover incomplete empty database");
     let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
         .unwrap()
         .create_if_missing(true)
@@ -290,6 +293,26 @@ fn data_dir() -> PathBuf {
     } else {
         PathBuf::from("data")
     }
+}
+
+/// A crash during the very first `CREATE TABLE` can leave a rollback journal beside a zero-byte
+/// database on Azure Files. It has no committed application pages to recover, but its server-side
+/// lock can prevent the next revision from opening the database. Keep it as an evidence file and
+/// let SQLite initialise a new database; never touch a non-empty database or its journal.
+async fn recover_empty_database_journal(db_path: &FsPath) -> Result<bool, std::io::Error> {
+    let empty_database = matches!(tokio::fs::metadata(db_path).await, Ok(metadata) if metadata.len() == 0);
+    let journal = PathBuf::from(format!("{}-journal", db_path.display()));
+    if !empty_database || tokio::fs::metadata(&journal).await.is_err() {
+        return Ok(false);
+    }
+    let name = db_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("ap-ready-invoice.sqlite3");
+    let backup = db_path.with_file_name(format!("{name}-journal.recovery-{}", Uuid::new_v4()));
+    tokio::fs::rename(&journal, &backup).await?;
+    warn!(database = %db_path.display(), journal = %backup.display(), "preserved stale journal from an empty database before SQLite startup");
+    Ok(true)
 }
 
 async fn load_or_create_key(path: &FsPath) -> Result<([u8; 32], &'static str), std::io::Error> {
@@ -1005,5 +1028,25 @@ mod tests {
         ));
         assert!(migration_is_locked(&locked));
         assert!(!migration_is_locked(&invalid));
+    }
+
+    #[tokio::test]
+    async fn preserves_a_stale_journal_beside_an_empty_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("invoice.sqlite3");
+        let journal = PathBuf::from(format!("{}-journal", database.display()));
+        tokio::fs::write(&database, []).await.unwrap();
+        tokio::fs::write(&journal, b"incomplete first migration")
+            .await
+            .unwrap();
+
+        assert!(recover_empty_database_journal(&database).await.unwrap());
+        assert!(!journal.exists());
+        let preserved = std::fs::read_dir(directory.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().contains("journal.recovery-"))
+            .unwrap();
+        assert_eq!(std::fs::read(preserved.path()).unwrap(), b"incomplete first migration");
     }
 }
