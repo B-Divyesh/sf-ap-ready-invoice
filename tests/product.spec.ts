@@ -22,6 +22,11 @@ test('@claim:demo-isolated creates separate disposable workspaces', async ({ bro
   await expect(pageA.getByText('Demo — sample data, nothing is saved.')).toBeVisible();
   await expect(pageA.getByRole('heading', {name:'Invoice MVS-1042'})).toBeVisible();
   const tokenA = await pageA.evaluate(() => localStorage.getItem('demo:apri:workspace'));
+  const demoResponse = await pageA.request.get('/api/dashboard', {headers:{'x-workspace-token':String(tokenA)}});
+  const demoBody = await demoResponse.json();
+  const hoursToExpiry = (Date.parse(`${demoBody.expires_at}Z`) - Date.now()) / 3_600_000;
+  expect(hoursToExpiry).toBeGreaterThan(23.9);
+  expect(hoursToExpiry).toBeLessThanOrEqual(24.1);
   await pageA.getByRole('button', {name:'Reset demo'}).click();
   await expect(pageA.getByRole('heading', {name:'Invoice MVS-1042'})).toBeVisible();
   const resetToken = await pageA.evaluate(() => localStorage.getItem('demo:apri:workspace'));
@@ -46,6 +51,22 @@ test('@claim:preflight flags a required missing PO number', async ({ page }) => 
   await expect(page.locator('.next-action')).toContainText('You fix the missing invoice details');
 });
 
+test('creates another invoice and opens it from the invoice index', async ({ page }) => {
+  await page.goto('/demo');
+  await expect(page.getByRole('heading', {name:'Invoice MVS-1042'})).toBeVisible();
+  await page.getByRole('button', {name:'Add invoice'}).click();
+  await page.getByLabel('Invoice number').fill('MVS-1043');
+  await page.getByLabel('Amount').fill('1250');
+  await page.getByLabel('PO number').fill('PO-74002');
+  await page.getByLabel('Work description').fill('Production design support — September milestone');
+  await page.getByLabel('Tax identifier').fill('GB 123 4567 89');
+  await page.getByLabel('Payment instructions').fill('Account ending 1842');
+  await page.getByRole('button', {name:'Save and run preflight'}).click();
+  await expect(page.getByText('Preflight finished. Review every marked item.')).toBeVisible();
+  await page.getByRole('button', {name:/MVS-1043/}).click();
+  await expect(page.getByRole('heading', {name:'Invoice MVS-1043'})).toBeVisible();
+});
+
 test('@claim:audit-export exports a receipt row as CSV', async ({ page }) => {
   await page.goto('/demo');
   const downloadPromise = page.waitForEvent('download');
@@ -55,6 +76,20 @@ test('@claim:audit-export exports a receipt row as CSV', async ({ page }) => {
   expect(content).toContain('timestamp,event,actor,detail');
   expect(content).toContain('created');
   expect(content.trim().split('\n').length).toBeGreaterThan(1);
+});
+
+test('@claim:invoice-packet provides printable invoice and email copy', async ({ page }) => {
+  await page.goto('/demo');
+  await expect(page.getByRole('heading', {name:'Invoice MVS-1042'})).toBeVisible();
+  await expect(page.getByRole('button', {name:'Open invoice packet'})).toBeEnabled();
+  await expect(page.getByRole('button', {name:'Copy email cover note'})).toBeVisible();
+  const token = await page.evaluate(() => localStorage.getItem('demo:apri:workspace'));
+  const dashboard = await page.request.get('/api/dashboard', {headers:{'x-workspace-token':String(token)}});
+  const invoice = (await dashboard.json()).invoices[0];
+  const response = await page.request.get(`/api/invoices/${invoice.id}/packet`, {headers:{'x-workspace-token':String(token)}});
+  const packet = await response.json();
+  expect(packet.email.to).toBe('ap@northstar.example');
+  expect(packet.email.body).toContain(`/status/${invoice.status_token}`);
 });
 
 test('@claim:status-receipt records the finance response', async ({ page }) => {
@@ -106,6 +141,16 @@ test('mobile workspace has no horizontal overflow and works by keyboard', async 
   await expect(page.locator('h1')).toBeFocused();
   await context.close();
 });
+
+for (const path of ['/demo','/app','/pricing','/privacy','/terms','/missing-page']) {
+  test(`accessibility baseline on ${path}`, async ({ page }) => {
+    await page.goto(path);
+    if (path === '/demo') await expect(page.getByRole('heading', {name:'Invoice MVS-1042'})).toBeVisible();
+    await expect(page.locator('h1')).toHaveCount(1);
+    const results = await new AxeBuilder({page}).analyze();
+    expect(results.violations.filter(v => ['serious','critical'].includes(v.impact || ''))).toEqual([]);
+  });
+}
 
 test('all API routes enforce a forwarded-IP rate limit', async ({ request }) => {
   const responses = await Promise.all(Array.from({length:46}, () => request.post('/api/demo', {headers:{'x-forwarded-for':'198.51.100.77'},data:{}})));

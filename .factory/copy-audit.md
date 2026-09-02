@@ -24,8 +24,8 @@ Audit date: 2026-09-02. Words are split on spaces. UI labels and proper names ar
 | It never claims to be your client's AP system. | 9 | Pass |
 | Sensitive invoice fields are encrypted on the server. | 8 | Pass |
 | You can export the receipt trail as CSV. | 8 | Pass |
-| Save client profiles, keep active invoices, and track AP replies. | 10 | Pass |
-| The demo stays free. | 4 | Pass |
+| Preflight, printing, and CSV stay free. | 6 | Pass |
+| Pro adds status links and AP receipt tracking. | 8 | Pass |
 | Sociobot is the merchant of record. | 6 | Pass |
 
 No sentence exceeds 22 words. No sentence contains a banned term.

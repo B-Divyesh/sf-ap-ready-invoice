@@ -21,6 +21,13 @@
     "sandbox": "demo invoice; download CSV and assert its header and event row"
   },
   {
+    "id": "invoice-packet",
+    "claim": "Builds a printable invoice and prepared email package.",
+    "where": "landing product description, workspace packet actions, README",
+    "test": "npm test -- --grep @claim:invoice-packet",
+    "sandbox": "demo invoice; assert the print action and email copy, then inspect the prepared finance email and status URL"
+  },
+  {
     "id": "status-receipt",
     "claim": "A finance recipient can update the secure status link and create a receipt event.",
     "where": "landing how-it-works, status page",

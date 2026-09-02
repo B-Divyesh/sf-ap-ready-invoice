@@ -2,7 +2,11 @@ node_modules/
 target/
 data/
 .test-data/
+.verify-data/
+.load-data/
 graphify-out/
+.factory/evidence/
+.factory/lighthouse.json
 frontend/dist/
 playwright-report/
 test-results/

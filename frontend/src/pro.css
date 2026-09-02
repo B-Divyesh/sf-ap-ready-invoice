@@ -4,3 +4,11 @@
   border-left: 5px solid var(--proof);
   font-size: 13px;
 }
+
+.workspace-head > button + button { margin-left: 8px; }
+.invoice-index { padding: 40px 0; border-top: 1px solid var(--ink); }
+.invoice-index h2 { margin: 8px 0 20px; font-size: 36px; }
+.invoice-index > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.invoice-index button { display: grid; justify-items: start; min-width: 160px; }
+.invoice-index button[aria-current="true"] { background: var(--ink); color: var(--paper); }
+.invoice-index small { font-weight: 400; }

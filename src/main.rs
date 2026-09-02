@@ -26,7 +26,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tower_http::{
-    cors::{Any, CorsLayer},
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
@@ -135,6 +134,7 @@ struct Check {
 #[derive(Debug, Serialize, FromRow)]
 struct Event {
     id: i64,
+    invoice_id: String,
     event_type: String,
     actor: String,
     detail: String,
@@ -146,6 +146,7 @@ struct Dashboard {
     invoices: Vec<Invoice>,
     events: Vec<Event>,
     demo: bool,
+    expires_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -194,6 +195,9 @@ async fn main() {
         .connect_with(options)
         .await
         .expect("open database");
+    set_private_permissions(&db_path)
+        .await
+        .expect("secure database permissions");
     sqlx::migrate!().run(&db).await.expect("run migrations");
     let (key, key_source) = load_or_create_key(&data_dir.join("encryption.key"))
         .await
@@ -231,14 +235,8 @@ async fn main() {
             }),
         )
         .nest("/api", api)
-        .fallback_service(ServeDir::new(&static_dir).not_found_service(ServeFile::new(index)))
+        .fallback_service(ServeDir::new(&static_dir).fallback(ServeFile::new(index)))
         .layer(middleware::from_fn(security_headers))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_headers(Any)
-                .allow_methods(Any),
-        )
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     let port: u16 = std::env::var("PORT")
@@ -294,6 +292,7 @@ fn data_dir() -> PathBuf {
 async fn load_or_create_key(path: &FsPath) -> Result<([u8; 32], &'static str), std::io::Error> {
     if let Ok(bytes) = tokio::fs::read(path).await {
         if bytes.len() == 32 {
+            set_private_permissions(path).await?;
             let mut key = [0; 32];
             key.copy_from_slice(&bytes);
             return Ok((key, "persisted"));
@@ -302,7 +301,17 @@ async fn load_or_create_key(path: &FsPath) -> Result<([u8; 32], &'static str), s
     let mut key = [0; 32];
     OsRng.fill_bytes(&mut key);
     tokio::fs::write(path, key).await?;
+    set_private_permissions(path).await?;
     Ok((key, "generated"))
+}
+
+async fn set_private_permissions(path: &FsPath) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
+    }
+    Ok(())
 }
 
 async fn shutdown() {
@@ -427,16 +436,19 @@ async fn dashboard(
         .into_iter()
         .map(|r| inflate(&state, r, &profile))
         .collect::<Result<_, _>>()?;
-    let events = if let Some(first) = invoices.first() {
-        sqlx::query_as("SELECT id,event_type,actor,detail,created_at FROM events WHERE invoice_id=? ORDER BY id DESC").bind(&first.id).fetch_all(&state.db).await?
-    } else {
-        vec![]
-    };
+    let events = sqlx::query_as("SELECT events.id,events.invoice_id,events.event_type,events.actor,events.detail,events.created_at FROM events JOIN invoices ON invoices.id=events.invoice_id WHERE invoices.workspace_id=? ORDER BY events.id DESC")
+        .bind(&workspace_id).fetch_all(&state.db).await?;
+    let expires_at: Option<String> =
+        sqlx::query_scalar("SELECT expires_at FROM workspaces WHERE id=?")
+            .bind(&workspace_id)
+            .fetch_one(&state.db)
+            .await?;
     Ok(Json(Dashboard {
         profile,
         invoices,
         events,
         demo,
+        expires_at,
     }))
 }
 
@@ -520,7 +532,17 @@ async fn mark_sent(
             "This packet is not ready. Fix every preflight item before marking it sent.".into(),
         ));
     }
+    let escalation_days: i64 =
+        sqlx::query_scalar("SELECT escalation_days FROM profiles WHERE workspace_id=?")
+            .bind(&workspace_id)
+            .fetch_one(&state.db)
+            .await?;
     sqlx::query("INSERT INTO events(invoice_id,event_type,actor,detail) VALUES(?,'sent','You','Invoice packet marked as sent to accounts payable')").bind(&id).execute(&state.db).await?;
+    sqlx::query("INSERT INTO events(invoice_id,event_type,actor,detail) VALUES(?,'follow_up_due','AP-Ready Invoice',?)")
+        .bind(&id)
+        .bind(format!("Follow up in {escalation_days} days if accounts payable has not replied"))
+        .execute(&state.db)
+        .await?;
     Ok(Json(
         serde_json::json!({"status":"waiting_on_ap","next_action":"Accounts payable confirms receipt"}),
     ))
@@ -552,7 +574,7 @@ async fn audit_csv(
     let (workspace_id, _) = workspace(&headers, &state.db).await?;
     let _ = fetch_raw(&state.db, &id, Some(&workspace_id)).await?;
     let events: Vec<Event> = sqlx::query_as(
-        "SELECT id,event_type,actor,detail,created_at FROM events WHERE invoice_id=? ORDER BY id",
+        "SELECT id,invoice_id,event_type,actor,detail,created_at FROM events WHERE invoice_id=? ORDER BY id",
     )
     .bind(&id)
     .fetch_all(&state.db)
