@@ -31,7 +31,14 @@
 
 - Checkout registration remains operator-gated. This repair did not touch billing, shared services, secrets, or resources outside `sf-ap-ready-invoice*`. The site exposes no purchase action or paid gate until registration is available.
 - No service worker is shipped and no offline/update claim is made. Email remains prepared for the sender to copy; the product does not impersonate or send through a client's AP system.
-- Deployment evidence will be appended after the repair commit is built and verified on the scoped production app.
+
+### Deployment evidence
+
+- Pushed repair commit `0e5c212ea65d8f6ef66b90f294188c7efa32556b` and deployed it with `WO_DATA_DIR=/data /opt/fleet/lib/deploy-container.sh ap-ready-invoice /work/repo Dockerfile 8080`.
+- ACR build `ch1xr` completed successfully with image tag `sf-ap-ready-invoice:0e5c212ea65d`. Scoped revision `sf-ap-ready-invoice--0000008` became Healthy and Provisioned with one replica and 100% traffic. The existing fleet-created share `sf-ap-ready-invoice-data` remains mounted at `/data`.
+- Both the container-app hostname and `https://ap-ready-invoice.sociobot.in/health` returned build SHA `0e5c212ea65d8f6ef66b90f294188c7efa32556b`. The live and local `index.html` SHA-256 values matched at `52346650c308e87d7abcc9ec36012bcd027269f5e428846c9147f92dbcf0f49f`.
+- Live `verify-url.sh` passed: HTTP 200, 568ms load, correct title/lang/landmarks, no missing alt text or unnamed controls, and no console errors. A live 390px demo and packet inspection found no sub-44px target, no packet console error, one loaded packet stylesheet, the expected Georgia heading and 3px rule, a canonical status URL, and zero checkout links.
+- Live `/missing-page` returned HTTP 404. `/assets/index-Bpkv0BSb.js` returned `Cache-Control: public, max-age=31536000, immutable` under the strict self-only style CSP. A 100-request concurrent live `/health` smoke returned 100 HTTP 200 responses.
 
 ## Independent verification: FAIL — 2026-09-02
 
