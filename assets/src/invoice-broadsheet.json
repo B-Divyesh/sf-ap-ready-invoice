@@ -1,0 +1,8 @@
+{
+  "model": "factory-image deployment via /opt/fleet/lib/gen-image.sh",
+  "date": "2026-09-02",
+  "size": "1536x1024",
+  "quality": "high",
+  "prompt": "Use case: stylized-concept. Asset type: wide landing-page editorial hero. An overhead still life of a corporate invoice handoff on warm uncoated newsprint: a clean blank invoice sheet, small purchase-order slip, window envelope, paper clip, and one red proofreader pencil. Monochrome black ink with a single restrained oxblood red accent. High-contrast editorial photography mixed with subtle halftone print texture, precise hard shadows, tactile paper fibers, 35mm top-down lens. Composition weighted to the right with calm negative paper space on the left. No people, no hands, no readable text, no numbers, no logos, no brands, no watermark, no gradient, no glossy 3D render.",
+  "review": "Accepted. No readable invented text, people, brands, watermark, malformed stationery, or palette drift."
+}
