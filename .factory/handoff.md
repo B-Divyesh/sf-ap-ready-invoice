@@ -12,6 +12,13 @@
 - `cargo build --release` passed. A clean temporary data directory launched the release server on `PORT=18080`; `GET /health` and `GET /` both returned HTTP 200.
 - `/opt/fleet/lib/verify-url.sh http://127.0.0.1:18081 <temp-evidence-dir>` passed: HTTP 200, `lang=en`, one `h1`, `main`, no missing image alt text or unlabeled buttons, no console errors; local load was 640 ms. The existing Playwright Axe suite found no serious or critical violations.
 
+### Deployment evidence
+
+- Exact clean container build/deploy command: `WO_DATA_DIR=/data /opt/fleet/lib/deploy-container.sh ap-ready-invoice /work/repo Dockerfile 8080`. ACR image `sociobotregistry.azurecr.io/sf-ap-ready-invoice:b48da2b35141` built successfully from commit `b48da2b35141226532ba4eec52c88fb91d26ca87`.
+- Active revision `sf-ap-ready-invoice--0000006` is ready with one replica. Its startup log records the preserved empty-database journal, Azure Files mode fallback, generated `/data/encryption.key`, and `server listening` on `0.0.0.0:8080`.
+- On 2026-09-02, both `https://sf-ap-ready-invoice.orangepond-1638693f.eastus2.azurecontainerapps.io/` and `https://ap-ready-invoice.sociobot.in/` returned root `200` and `/health` `200`; both health responses reported build SHA `b48da2b35141226532ba4eec52c88fb91d26ca87`.
+- Live `verify-url.sh` against the custom domain passed: HTTP 200, no console errors, title/lang/one-h1/main/alt/button baseline all passed, with a 649 ms page load.
+
 ## What shipped
 
 - A Rust 2021 Axum service on `PORT` with SQLite migrations, JSON logs, graceful shutdown, secure response headers, forwarded-IP rate limiting, and `GET /health` build identity.
