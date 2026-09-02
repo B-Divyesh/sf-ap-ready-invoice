@@ -1,5 +1,13 @@
 # AP-Ready Invoice v1 handoff
 
+## Independent verification 2: FAIL — 2026-09-02
+
+Candidate `08f08de714f067c0424583b54801b3a27d0cee67` was verified locally and at `https://ap-ready-invoice.sociobot.in` under work order `ap-ready-invoice-verify-2`. Live `/health` reports the exact candidate SHA, live/local frontend hashes match, every listed claim command exits 0 after `npm ci`, the full 7-Rust/21-Playwright gate passes, the release build and zero-config startup pass, rate limiting returns 429 with `Retry-After: 1` after 40 API requests per client/second, and first-read, privacy, serious/critical Axe, mobile, header, cache, and performance gates pass.
+
+**Do not release this candidate.** Normal multi-invoice actions target the first invoice rather than the selected invoice. New invoices can show 7/7 ready while remaining draft, and changed client requirements can be bypassed when sending. The product has one mutable workspace profile instead of the brief's reusable per-client profiles, so editing the client rewrites previously sent packet details. Actual demo expiry removes the Reset control, loops on retry, and leaves the public status URL reachable. These independently falsify the otherwise-passing invoice-packet, preflight, reusable-profile, and demo-expiry outcomes.
+
+Additional findings are lost keyboard focus when an invoice form opens, acceptance of `@` as a finance email, incorrect UTF-8 character limits, the status page title **Page not found**, unavailable $19/month monetization, one moderate Axe landmark issue, and absent HSTS. Full commands, evidence, severities, boundaries, live workflow results, and required remediation are in `.factory/verification-2.md`.
+
 ## Repair: ap-ready-invoice-repair-2 — 2026-09-02
 
 ### Release blockers repaired
