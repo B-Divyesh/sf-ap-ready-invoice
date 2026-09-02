@@ -194,13 +194,8 @@ async fn main() {
         // stale lock races while a replacement revision adopts the durable database.
         .journal_mode(SqliteJournalMode::Delete)
         .busy_timeout(Duration::from_secs(60));
-    let db = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect_with(options)
-        .await
-        .expect("open database");
+    let db = open_database(options).await;
     let database_permissions = set_private_permissions(&db_path).await;
-    run_migrations(&db).await;
     let (key, key_source) = load_or_create_key(&data_dir.join("encryption.key"))
         .await
         .expect("load encryption key");
@@ -338,12 +333,21 @@ fn permissions_error_is_nonfatal(error: &std::io::Error) -> bool {
         || matches!(error.raw_os_error(), Some(1 | 95))
 }
 
-async fn run_migrations(db: &SqlitePool) {
+async fn open_database(options: SqliteConnectOptions) -> SqlitePool {
     const ATTEMPTS: u32 = 4;
     for attempt in 1..=ATTEMPTS {
-        match sqlx::migrate!().run(db).await {
-            Ok(()) => return,
+        // A single connection is deliberate: this product has one SQLite writer on an Azure
+        // Files share. On a failed migration, closing this pool releases its journal/lock before
+        // the next attempt instead of making the process wait on its own failed connection.
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options.clone())
+            .await
+            .expect("open database");
+        match sqlx::migrate!().run(&db).await {
+            Ok(()) => return db,
             Err(error) if migration_is_locked(&error) && attempt < ATTEMPTS => {
+                db.close().await;
                 let wait = Duration::from_secs(u64::from(attempt) * 5);
                 warn!(attempt, wait_seconds = wait.as_secs(), error = %error, "database is temporarily locked; retrying migrations");
                 tokio::time::sleep(wait).await;
