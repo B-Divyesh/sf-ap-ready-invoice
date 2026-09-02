@@ -190,8 +190,8 @@ async fn main() {
     recover_empty_database_journal(&db_path)
         .await
         .expect("recover incomplete empty database");
-    let migration_options = sqlite_connect_options(&db_path, true);
-    let runtime_options = sqlite_connect_options(&db_path, false);
+    let migration_options = sqlite_connect_options(&db_path);
+    let runtime_options = sqlite_connect_options(&db_path);
     let db = open_database(migration_options, runtime_options).await;
     let database_permissions = set_private_permissions(&db_path).await;
     let (key, key_source) = load_or_create_key(&data_dir.join("encryption.key"))
@@ -427,25 +427,19 @@ fn permissions_error_is_nonfatal(error: &std::io::Error) -> bool {
         || matches!(error.raw_os_error(), Some(1 | 95))
 }
 
-fn sqlite_connect_options(db_path: &FsPath, for_migration: bool) -> SqliteConnectOptions {
-    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
+fn sqlite_connect_options(db_path: &FsPath) -> SqliteConnectOptions {
+    SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
         .unwrap()
         .create_if_missing(true)
         .foreign_keys(true)
         // Azure Files is a network filesystem. DELETE journaling and a longer busy timeout avoid
         // stale lock races while a replacement revision adopts the durable database.
+        // `unix-excl` avoids unreliable SMB byte-range lock upgrades. The pool's one-second idle
+        // timeout below is what releases this exclusive connection between requests and revisions.
+        .vfs("unix-excl")
         .journal_mode(SqliteJournalMode::Delete)
-        .busy_timeout(Duration::from_secs(60));
-    if for_migration {
-        // Schema changes use a single-writer VFS so SMB never has to upgrade POSIX byte-range
-        // locks. This pool is closed immediately after migrations; retaining this mode at runtime
-        // would prevent the next container revision from becoming ready during a rolling deploy.
-        options
-            .vfs("unix-excl")
-            .locking_mode(SqliteLockingMode::Exclusive)
-    } else {
-        options.locking_mode(SqliteLockingMode::Normal)
-    }
+        .locking_mode(SqliteLockingMode::Exclusive)
+        .busy_timeout(Duration::from_secs(60))
 }
 
 async fn open_database(
@@ -488,6 +482,7 @@ async fn open_database(
     for attempt in 1..=ATTEMPTS {
         match SqlitePoolOptions::new()
             .max_connections(1)
+            .idle_timeout(Duration::from_secs(1))
             .connect_with(runtime_options.clone())
             .await
         {
@@ -1267,12 +1262,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_pool_releases_exclusive_migration_lock() {
+    async fn idle_runtime_pool_releases_exclusive_lock_for_next_revision() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("rolling.sqlite3");
         let migration = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect_with(sqlite_connect_options(&database, true))
+            .connect_with(sqlite_connect_options(&database))
             .await
             .unwrap();
         sqlx::query("CREATE TABLE deployment_probe(id INTEGER PRIMARY KEY)")
@@ -1283,18 +1278,26 @@ mod tests {
 
         let first_revision = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect_with(sqlite_connect_options(&database, false))
+            .idle_timeout(Duration::from_millis(50))
+            .connect_with(sqlite_connect_options(&database))
             .await
             .unwrap();
         let locking_mode: String = sqlx::query_scalar("PRAGMA locking_mode")
             .fetch_one(&first_revision)
             .await
             .unwrap();
-        assert_eq!(locking_mode, "normal");
+        assert_eq!(locking_mode, "exclusive");
+        for _ in 0..20 {
+            if first_revision.size() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(first_revision.size(), 0);
 
         let next_revision = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect_with(sqlite_connect_options(&database, false))
+            .connect_with(sqlite_connect_options(&database))
             .await
             .unwrap();
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deployment_probe")
