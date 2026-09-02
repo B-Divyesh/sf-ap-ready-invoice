@@ -1,5 +1,13 @@
 # AP-Ready Invoice v1 handoff
 
+## Independent verification: FAIL — 2026-09-02
+
+Candidate `f0df92ce2ec66cfa2e0b968f61307bd036e65bbe` was verified locally and at `https://ap-ready-invoice.sociobot.in`. The live `/health` identity and frontend hash match the candidate, all seven listed claim commands pass after `npm ci`, `npm test` passes (5 Rust + 17 Chromium tests), the release build passes, and the cold first-read/demo gate passes.
+
+**Do not release this candidate.** Production checkout returns HTTP 404, and opening the printable packet triggers a CSP console error that blocks all packet styling. The packet claim test does not open or inspect that output. Additional findings are malformed dates accepted as AP-ready, unlisted paid-tier claims, failing `npx tsc --noEmit` and `cargo fmt -- --check`, sub-44px mobile targets, unknown routes returning HTTP 200, and absent immutable asset caching.
+
+Full independent evidence and required remediation are in `.factory/verification.md`.
+
 ## Repair: ap-ready-invoice-repair-1
 
 - Repaired the failed `a539cb2929044ebf3236b28e96d3943a70f9a924` container revision. Product revision logs showed two Azure Files startup conditions before the listener could bind `PORT`: POSIX `chmod` returned `Operation not permitted (os error 1)`, then SQLite migration returned `database is locked` after its 5-second default wait. The failed first migration left a zero-byte database and rollback journal; the journal is now renamed in place as recovery evidence (never deleted) before SQLite initialises a fresh empty database.
