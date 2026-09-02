@@ -1,0 +1,15 @@
+{
+  "slug": "ap-ready-invoice",
+  "title": "AP-Ready Invoice",
+  "summary": "Check corporate AP requirements, send an invoice packet, and see who has the next action.",
+  "territory": "utilities",
+  "user": "Freelancers and small studios paid by corporate finance departments who need invoices accepted on the first attempt and need to see who has the next action.",
+  "current_workaround": "Export a PDF, email AP manually, keep PO, tax, and bank details in notes, and chase status through email threads.",
+  "smallest_useful_product": "Reusable client AP profiles, invoice preflight, branded PDF and email package, secure status link, and escalation timeline.",
+  "success_measure": "In pilots, 85% of invoices pass the recipient's first AP review and median time-to-first-status drops by 30%.",
+  "artifact_class": "web-with-backend",
+  "monetization": "subscription — $19/month",
+  "constraints": "Secure bank and tax identifiers, never impersonate an AP system, and make delivery and audit logs exportable.",
+  "confidence": 4,
+  "state": "BUILT"
+}

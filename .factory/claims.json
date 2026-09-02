@@ -1,0 +1,44 @@
+[
+  {
+    "id": "demo-isolated",
+    "claim": "The demo uses separate sample data and expires after 24 hours.",
+    "where": "landing facts, demo banner, privacy page",
+    "test": "npm test -- --grep @claim:demo-isolated",
+    "sandbox": "two fresh browser contexts and a demo reset; assert three different workspace keys"
+  },
+  {
+    "id": "preflight",
+    "claim": "The preflight flags required invoice details before sending.",
+    "where": "landing preview, workspace",
+    "test": "npm test -- --grep @claim:preflight",
+    "sandbox": "demo invoice; remove its required PO and assert the row and next action change"
+  },
+  {
+    "id": "audit-export",
+    "claim": "Exports the receipt trail as CSV.",
+    "where": "landing privacy section, workspace toolbar",
+    "test": "npm test -- --grep @claim:audit-export",
+    "sandbox": "demo invoice; download CSV and assert its header and event row"
+  },
+  {
+    "id": "status-receipt",
+    "claim": "A finance recipient can update the secure status link and create a receipt event.",
+    "where": "landing how-it-works, status page",
+    "test": "npm test -- --grep @claim:status-receipt",
+    "sandbox": "demo invoice; mark sent, submit received with a note, then assert invoice status and event"
+  },
+  {
+    "id": "encrypted-fields",
+    "claim": "Bank and tax fields are encrypted before storage.",
+    "where": "landing facts, privacy page",
+    "test": "npm test -- --grep @claim:encrypted-fields",
+    "sandbox": "demo invoice; inspect the isolated test SQLite row and assert neither plaintext value is stored"
+  },
+  {
+    "id": "no-tracking",
+    "claim": "The product loads no analytics or tracking requests.",
+    "where": "privacy page",
+    "test": "npm test -- --grep @claim:no-tracking",
+    "sandbox": "fresh demo browser context; record every request through a preflight and assert same-origin only"
+  }
+]
