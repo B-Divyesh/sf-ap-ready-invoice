@@ -1,5 +1,32 @@
 # AP-Ready Invoice v1 handoff
 
+## Venture plan audit: M1 not accepted — 2026-09-05
+
+Documentation-only planner work order `ap-ready-invoice-plan-1` added
+`.factory/plan.md` and `/work/.evidence/venture-plan.json`. No application
+code, deployment, product data, or external configuration was changed.
+
+- A clean `npm ci && npm test` completed with 7 Rust tests and 21 Chromium
+  tests passing. That confirms the current automated suite, not the product
+  outcome: independent verification already showed its M1 claims are too
+  narrow.
+- A fresh scoped production demo again completed the single-invoice happy
+  path, then reproduced the release blocker: after selecting `MVS-1042`, the
+  packet opened the newly created second invoice. The public status page still
+  used the **Page not found — AP-Ready Invoice** title.
+- A fresh 120-request production `/api/demo` probe received only HTTP 200
+  responses and no `Retry-After`, despite the source and local test asserting a
+  40-request forwarded-IP limiter. Live rate limiting is therefore not
+  accepted and is preserved as M1 verification work. HSTS was also absent from
+  the observed live root headers.
+
+The next worker owns M1 repair and independent live verification exactly as
+defined in `.factory/plan.md`: selected-invoice dispatch, atomic preflight,
+multiple immutable profile snapshots, expiry recovery/revocation, accessibility
+and metadata repairs, and observable public-origin rate limiting. Billing,
+sign-in, tenant isolation, message delivery, and HMRC access remain unbuilt;
+do not describe them as shipped or request production credentials.
+
 ## Independent verification 2: FAIL — 2026-09-02
 
 Candidate `08f08de714f067c0424583b54801b3a27d0cee67` was verified locally and at `https://ap-ready-invoice.sociobot.in` under work order `ap-ready-invoice-verify-2`. Live `/health` reports the exact candidate SHA, live/local frontend hashes match, every listed claim command exits 0 after `npm ci`, the full 7-Rust/21-Playwright gate passes, the release build and zero-config startup pass, rate limiting returns 429 with `Retry-After: 1` after 40 API requests per client/second, and first-read, privacy, serious/critical Axe, mobile, header, cache, and performance gates pass.
