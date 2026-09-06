@@ -12,3 +12,10 @@
 .invoice-index button { display: grid; justify-items: start; min-width: 160px; }
 .invoice-index button[aria-current="true"] { background: var(--ink); color: var(--paper); }
 .invoice-index small { font-weight: 400; }
+.workspace-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.profile-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.profile-list button { display: grid; gap: 2px; justify-items: start; min-width: 180px; text-align: left; }
+.profile-list button[aria-current="true"] { background: var(--ink); color: var(--paper); }
+.profile-list small { font-weight: 400; }
+.profile-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+@media(max-width:760px) { .workspace-actions,.profile-actions { justify-content: flex-start; } }

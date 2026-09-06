@@ -96,6 +96,7 @@ struct WorkspaceReply {
 
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
 struct Profile {
+    id: String,
     freelancer_name: String,
     company_name: String,
     ap_email: String,
@@ -121,6 +122,8 @@ struct Invoice {
     status: String,
     status_token: String,
     created_at: String,
+    profile_id: String,
+    profile: Profile,
     checks: Vec<Check>,
     next_action: String,
 }
@@ -143,7 +146,7 @@ struct Event {
 }
 #[derive(Serialize)]
 struct Dashboard {
-    profile: Profile,
+    profiles: Vec<Profile>,
     invoices: Vec<Invoice>,
     events: Vec<Event>,
     demo: bool,
@@ -152,6 +155,7 @@ struct Dashboard {
 
 #[derive(Deserialize)]
 struct InvoiceInput {
+    profile_id: String,
     number: String,
     amount_cents: i64,
     currency: String,
@@ -164,6 +168,18 @@ struct InvoiceInput {
     tax_id: String,
     #[serde(default)]
     bank_details: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfileInput {
+    freelancer_name: String,
+    company_name: String,
+    ap_email: String,
+    billing_address: String,
+    po_required: bool,
+    tax_required: bool,
+    bank_required: bool,
+    escalation_days: i64,
 }
 
 #[derive(Deserialize)]
@@ -220,7 +236,8 @@ async fn main() {
         .route("/workspaces", post(create_workspace))
         .route("/demo", post(create_demo))
         .route("/dashboard", get(dashboard))
-        .route("/profile", put(save_profile))
+        .route("/profiles", post(create_profile))
+        .route("/profiles/{id}", put(update_profile))
         .route("/invoices", post(create_invoice))
         .route("/invoices/{id}", put(update_invoice))
         .route("/invoices/{id}/send", post(mark_sent))
@@ -230,6 +247,8 @@ async fn main() {
         .route("/status/{token}", get(public_status))
         .route("/status/{token}/action", post(public_status_action))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit));
+    #[cfg(debug_assertions)]
+    let api = api.route("/test/demo/{token}/expire", post(expire_demo_for_test));
     let app = Router::new()
         .route(
             "/health",
@@ -317,8 +336,17 @@ async fn security_headers(request: Request, next: Next) -> Response {
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
     headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert(
+        "strict-transport-security",
+        HeaderValue::from_static("max-age=31536000"),
+    );
     headers.insert("content-security-policy", HeaderValue::from_static("default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"));
-    if path.starts_with("/assets/") {
+    // Workspace tokens travel in a request header, not the URL. HTTP caches
+    // key responses by URL unless a response opts out (or declares Vary), so
+    // an expired demo response must never be reused for a fresh demo token.
+    if path.starts_with("/api/") {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    } else if path.starts_with("/assets/") {
         headers.insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static("public, max-age=31536000, immutable"),
@@ -573,28 +601,57 @@ async fn rate_limit(
 async fn create_workspace(State(state): State<AppState>) -> Result<Json<WorkspaceReply>, AppError> {
     let id = Uuid::new_v4().to_string();
     let token = secret_token();
+    let profile_id = Uuid::new_v4().to_string();
+    let mut tx = state.db.begin().await?;
     sqlx::query("INSERT INTO workspaces(id,token,is_demo) VALUES(?,?,0)")
         .bind(&id)
         .bind(&token)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO profiles(workspace_id) VALUES(?)")
+    sqlx::query("INSERT INTO client_profiles(id,workspace_id) VALUES(?,?)")
+        .bind(&profile_id)
         .bind(&id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(Json(WorkspaceReply { token, demo: false }))
 }
 
 async fn create_demo(State(state): State<AppState>) -> Result<Json<WorkspaceReply>, AppError> {
-    sqlx::query("DELETE FROM workspaces WHERE is_demo=1 AND expires_at < datetime('now')")
-        .execute(&state.db)
-        .await?;
+    cleanup_expired_demos(&state.db).await?;
     let id = Uuid::new_v4().to_string();
     let token = secret_token();
-    sqlx::query("INSERT INTO workspaces(id,token,is_demo,expires_at) VALUES(?,?,1,datetime('now','+24 hours'))").bind(&id).bind(&token).execute(&state.db).await?;
-    sqlx::query("INSERT INTO profiles(workspace_id,freelancer_name,company_name,ap_email,billing_address,po_required,tax_required,bank_required,escalation_days) VALUES(?,?,?,?,?,1,1,1,5)")
-        .bind(&id).bind("Mara Vale Studio").bind("Northstar Systems Ltd").bind("ap@northstar.example").bind("85 Clerkenwell Road, London EC1M 5RF").execute(&state.db).await?;
+    let profile = Profile {
+        id: Uuid::new_v4().to_string(),
+        freelancer_name: "Mara Vale Studio".into(),
+        company_name: "Northstar Systems Ltd".into(),
+        ap_email: "ap@northstar.example".into(),
+        billing_address: "85 Clerkenwell Road, London EC1M 5RF".into(),
+        po_required: true,
+        tax_required: true,
+        bank_required: true,
+        escalation_days: 5,
+    };
+    sqlx::query("INSERT INTO workspaces(id,token,is_demo,expires_at) VALUES(?,?,1,datetime('now','+24 hours'))")
+        .bind(&id)
+        .bind(&token)
+        .execute(&state.db)
+        .await?;
+    sqlx::query("INSERT INTO client_profiles(id,workspace_id,freelancer_name,company_name,ap_email,billing_address,po_required,tax_required,bank_required,escalation_days) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .bind(&profile.id)
+        .bind(&id)
+        .bind(&profile.freelancer_name)
+        .bind(&profile.company_name)
+        .bind(&profile.ap_email)
+        .bind(&profile.billing_address)
+        .bind(profile.po_required)
+        .bind(profile.tax_required)
+        .bind(profile.bank_required)
+        .bind(profile.escalation_days)
+        .execute(&state.db)
+        .await?;
     let input = InvoiceInput {
+        profile_id: profile.id.clone(),
         number: "MVS-1042".into(),
         amount_cents: 840000,
         currency: "USD".into(),
@@ -605,8 +662,15 @@ async fn create_demo(State(state): State<AppState>) -> Result<Json<WorkspaceRepl
         tax_id: "GB 123 4567 89".into(),
         bank_details: "Account ending 1842 · SWIFT MIDLGB22".into(),
     };
-    insert_invoice(&state, &id, &input, "ready").await?;
+    insert_invoice(&state, &id, &input, &profile).await?;
     Ok(Json(WorkspaceReply { token, demo: true }))
+}
+
+async fn cleanup_expired_demos(db: &SqlitePool) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM workspaces WHERE is_demo=1 AND expires_at < datetime('now')")
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 async fn workspace(headers: &HeaderMap, db: &SqlitePool) -> Result<(String, bool), AppError> {
@@ -614,17 +678,34 @@ async fn workspace(headers: &HeaderMap, db: &SqlitePool) -> Result<(String, bool
         .get("x-workspace-token")
         .and_then(|v| v.to_str().ok())
         .ok_or(AppError::Unauthorized)?;
-    let row: Option<(String, bool, bool)> = sqlx::query_as(
-        "SELECT id,is_demo,COALESCE(expires_at < datetime('now'),0) FROM workspaces WHERE token=?",
+    let row: Option<(String, bool)> = sqlx::query_as(
+        "SELECT id,is_demo FROM workspaces WHERE token=? AND (is_demo=0 OR expires_at IS NULL OR expires_at >= datetime('now'))",
     )
     .bind(token)
     .fetch_optional(db)
     .await?;
-    let (id, demo, expired) = row.ok_or(AppError::Unauthorized)?;
-    if demo && expired {
+    if let Some((id, demo)) = row {
+        return Ok((id, demo));
+    }
+    let expired: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM workspaces WHERE token=? AND is_demo=1 AND expires_at < datetime('now'))",
+    )
+    .bind(token)
+    .fetch_one(db)
+    .await?;
+    if expired == 1 {
+        let id: String = sqlx::query_scalar("SELECT id FROM workspaces WHERE token=?")
+            .bind(token)
+            .fetch_one(db)
+            .await?;
+        sqlx::query("DELETE FROM workspaces WHERE id=? AND token=?")
+            .bind(&id)
+            .bind(token)
+            .execute(db)
+            .await?;
         return Err(AppError::Expired);
     }
-    Ok((id, demo))
+    Err(AppError::Unauthorized)
 }
 
 async fn dashboard(
@@ -632,11 +713,14 @@ async fn dashboard(
     headers: HeaderMap,
 ) -> Result<Json<Dashboard>, AppError> {
     let (workspace_id, demo) = workspace(&headers, &state.db).await?;
-    let profile: Profile = sqlx::query_as("SELECT freelancer_name,company_name,ap_email,billing_address,po_required,tax_required,bank_required,escalation_days FROM profiles WHERE workspace_id=?").bind(&workspace_id).fetch_one(&state.db).await?;
-    let rows = sqlx::query_as::<_, RawInvoice>("SELECT id,number,amount_cents,currency,issue_date,due_date,description,po_number,tax_id_enc,bank_details_enc,status,status_token,created_at FROM invoices WHERE workspace_id=? ORDER BY created_at DESC").bind(&workspace_id).fetch_all(&state.db).await?;
+    let profiles = profiles_for_workspace(&state.db, &workspace_id).await?;
+    let rows = sqlx::query_as::<_, RawInvoice>(RAW_INVOICE_BY_WORKSPACE)
+        .bind(&workspace_id)
+        .fetch_all(&state.db)
+        .await?;
     let invoices: Vec<Invoice> = rows
         .into_iter()
-        .map(|r| inflate(&state, r, &profile))
+        .map(|r| inflate(&state, r))
         .collect::<Result<_, _>>()?;
     let events = sqlx::query_as("SELECT events.id,events.invoice_id,events.event_type,events.actor,events.detail,events.created_at FROM events JOIN invoices ON invoices.id=events.invoice_id WHERE invoices.workspace_id=? ORDER BY events.id DESC")
         .bind(&workspace_id).fetch_all(&state.db).await?;
@@ -646,7 +730,7 @@ async fn dashboard(
             .fetch_one(&state.db)
             .await?;
     Ok(Json(Dashboard {
-        profile,
+        profiles,
         invoices,
         events,
         demo,
@@ -654,25 +738,93 @@ async fn dashboard(
     }))
 }
 
-async fn save_profile(
+async fn create_profile(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(p): Json<Profile>,
+    Json(input): Json<ProfileInput>,
 ) -> Result<Json<Profile>, AppError> {
     let (workspace_id, _) = workspace(&headers, &state.db).await?;
-    if !p.ap_email.contains('@') {
-        return Err(AppError::BadRequest(
-            "Enter the finance team's email address.".into(),
-        ));
+    validate_profile(&input)?;
+    let profile = Profile {
+        id: Uuid::new_v4().to_string(),
+        freelancer_name: input.freelancer_name,
+        company_name: input.company_name,
+        ap_email: input.ap_email,
+        billing_address: input.billing_address,
+        po_required: input.po_required,
+        tax_required: input.tax_required,
+        bank_required: input.bank_required,
+        escalation_days: input.escalation_days,
+    };
+    sqlx::query("INSERT INTO client_profiles(id,workspace_id,freelancer_name,company_name,ap_email,billing_address,po_required,tax_required,bank_required,escalation_days) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .bind(&profile.id).bind(&workspace_id).bind(&profile.freelancer_name).bind(&profile.company_name).bind(&profile.ap_email).bind(&profile.billing_address).bind(profile.po_required).bind(profile.tax_required).bind(profile.bank_required).bind(profile.escalation_days).execute(&state.db).await?;
+    Ok(Json(profile))
+}
+
+async fn update_profile(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<ProfileInput>,
+) -> Result<Json<Profile>, AppError> {
+    let (workspace_id, _) = workspace(&headers, &state.db).await?;
+    validate_profile(&input)?;
+    let result = sqlx::query("UPDATE client_profiles SET freelancer_name=?,company_name=?,ap_email=?,billing_address=?,po_required=?,tax_required=?,bank_required=?,escalation_days=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND workspace_id=?")
+        .bind(&input.freelancer_name).bind(&input.company_name).bind(&input.ap_email).bind(&input.billing_address).bind(input.po_required).bind(input.tax_required).bind(input.bank_required).bind(input.escalation_days).bind(&id).bind(&workspace_id).execute(&state.db).await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound);
     }
-    if !(1..=30).contains(&p.escalation_days) {
-        return Err(AppError::BadRequest(
-            "Set follow-up between 1 and 30 days.".into(),
-        ));
+    Ok(Json(Profile {
+        id,
+        freelancer_name: input.freelancer_name,
+        company_name: input.company_name,
+        ap_email: input.ap_email,
+        billing_address: input.billing_address,
+        po_required: input.po_required,
+        tax_required: input.tax_required,
+        bank_required: input.bank_required,
+        escalation_days: input.escalation_days,
+    }))
+}
+
+async fn profiles_for_workspace(
+    db: &SqlitePool,
+    workspace_id: &str,
+) -> Result<Vec<Profile>, AppError> {
+    Ok(sqlx::query_as("SELECT id,freelancer_name,company_name,ap_email,billing_address,po_required,tax_required,bank_required,escalation_days FROM client_profiles WHERE workspace_id=? ORDER BY created_at, id")
+        .bind(workspace_id)
+        .fetch_all(db)
+        .await?)
+}
+
+async fn profile_by_id(
+    db: &SqlitePool,
+    workspace_id: &str,
+    profile_id: &str,
+) -> Result<Profile, AppError> {
+    sqlx::query_as("SELECT id,freelancer_name,company_name,ap_email,billing_address,po_required,tax_required,bank_required,escalation_days FROM client_profiles WHERE id=? AND workspace_id=?")
+        .bind(profile_id)
+        .bind(workspace_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("Choose a saved client AP profile before running preflight.".into()))
+}
+
+#[cfg(debug_assertions)]
+async fn expire_demo_for_test(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let updated = sqlx::query(
+        "UPDATE workspaces SET expires_at=datetime('now','-1 minute') WHERE token=? AND is_demo=1",
+    )
+    .bind(token)
+    .execute(&state.db)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(AppError::NotFound);
     }
-    sqlx::query("UPDATE profiles SET freelancer_name=?,company_name=?,ap_email=?,billing_address=?,po_required=?,tax_required=?,bank_required=?,escalation_days=?,updated_at=CURRENT_TIMESTAMP WHERE workspace_id=?")
-        .bind(&p.freelancer_name).bind(&p.company_name).bind(&p.ap_email).bind(&p.billing_address).bind(p.po_required).bind(p.tax_required).bind(p.bank_required).bind(p.escalation_days).bind(workspace_id).execute(&state.db).await?;
-    Ok(Json(p))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn create_invoice(
@@ -682,9 +834,9 @@ async fn create_invoice(
 ) -> Result<(StatusCode, Json<Invoice>), AppError> {
     let (workspace_id, _) = workspace(&headers, &state.db).await?;
     validate_invoice(&input)?;
-    let raw = insert_invoice(&state, &workspace_id, &input, "draft").await?;
-    let profile: Profile = sqlx::query_as("SELECT freelancer_name,company_name,ap_email,billing_address,po_required,tax_required,bank_required,escalation_days FROM profiles WHERE workspace_id=?").bind(workspace_id).fetch_one(&state.db).await?;
-    Ok((StatusCode::CREATED, Json(inflate(&state, raw, &profile)?)))
+    let profile = profile_by_id(&state.db, &workspace_id, &input.profile_id).await?;
+    let raw = insert_invoice(&state, &workspace_id, &input, &profile).await?;
+    Ok((StatusCode::CREATED, Json(inflate(&state, raw)?)))
 }
 
 async fn update_invoice(
@@ -695,15 +847,15 @@ async fn update_invoice(
 ) -> Result<Json<Invoice>, AppError> {
     let (workspace_id, _) = workspace(&headers, &state.db).await?;
     validate_invoice(&input)?;
-    let profile: Profile = sqlx::query_as("SELECT freelancer_name,company_name,ap_email,billing_address,po_required,tax_required,bank_required,escalation_days FROM profiles WHERE workspace_id=?").bind(&workspace_id).fetch_one(&state.db).await?;
+    let profile = profile_by_id(&state.db, &workspace_id, &input.profile_id).await?;
     let checks = make_checks(&profile, &input);
     let status = if checks.iter().all(|c| c.ready) {
         "ready"
     } else {
         "draft"
     };
-    let result = sqlx::query("UPDATE invoices SET number=?,amount_cents=?,currency=?,issue_date=?,due_date=?,description=?,po_number=?,tax_id_enc=?,bank_details_enc=?,status=? WHERE id=? AND workspace_id=?")
-        .bind(&input.number).bind(input.amount_cents).bind(&input.currency).bind(&input.issue_date).bind(&input.due_date).bind(&input.description).bind(&input.po_number).bind(encrypt(&state, &input.tax_id)?).bind(encrypt(&state, &input.bank_details)?).bind(status).bind(&id).bind(&workspace_id).execute(&state.db).await?;
+    let result = sqlx::query("UPDATE invoices SET number=?,amount_cents=?,currency=?,issue_date=?,due_date=?,description=?,po_number=?,tax_id_enc=?,bank_details_enc=?,status=?,profile_id=?,snapshot_freelancer_name=?,snapshot_company_name=?,snapshot_ap_email=?,snapshot_billing_address=?,snapshot_po_required=?,snapshot_tax_required=?,snapshot_bank_required=?,snapshot_escalation_days=? WHERE id=? AND workspace_id=? AND status IN ('draft','ready','needs_changes')")
+        .bind(&input.number).bind(input.amount_cents).bind(&input.currency).bind(&input.issue_date).bind(&input.due_date).bind(&input.description).bind(&input.po_number).bind(encrypt(&state, &input.tax_id)?).bind(encrypt(&state, &input.bank_details)?).bind(status).bind(&profile.id).bind(&profile.freelancer_name).bind(&profile.company_name).bind(&profile.ap_email).bind(&profile.billing_address).bind(profile.po_required).bind(profile.tax_required).bind(profile.bank_required).bind(profile.escalation_days).bind(&id).bind(&workspace_id).execute(&state.db).await?;
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
@@ -719,7 +871,7 @@ async fn update_invoice(
     .execute(&state.db)
     .await?;
     let raw = fetch_raw(&state.db, &id, Some(&workspace_id)).await?;
-    Ok(Json(inflate(&state, raw, &profile)?))
+    Ok(Json(inflate(&state, raw)?))
 }
 
 async fn mark_sent(
@@ -728,23 +880,47 @@ async fn mark_sent(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let (workspace_id, _) = workspace(&headers, &state.db).await?;
-    let result = sqlx::query("UPDATE invoices SET status='waiting_on_ap' WHERE id=? AND workspace_id=? AND status IN ('ready','waiting_on_ap')").bind(&id).bind(&workspace_id).execute(&state.db).await?;
-    if result.rows_affected() == 0 {
+    let mut tx = state.db.begin().await?;
+    let raw: Option<RawInvoice> = sqlx::query_as(RAW_INVOICE_BY_ID_AND_WORKSPACE)
+        .bind(&id)
+        .bind(&workspace_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let raw = raw.ok_or(AppError::NotFound)?;
+    let profile = profile_from_snapshot(&raw);
+    let input = input_from_raw(&state, &raw)?;
+    if !make_checks(&profile, &input)
+        .iter()
+        .all(|check| check.ready)
+    {
+        sqlx::query("UPDATE invoices SET status='draft' WHERE id=? AND workspace_id=? AND status IN ('draft','ready','needs_changes')")
+            .bind(&id)
+            .bind(&workspace_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         return Err(AppError::BadRequest(
             "This packet is not ready. Fix every preflight item before marking it sent.".into(),
         ));
     }
-    let escalation_days: i64 =
-        sqlx::query_scalar("SELECT escalation_days FROM profiles WHERE workspace_id=?")
-            .bind(&workspace_id)
-            .fetch_one(&state.db)
-            .await?;
-    sqlx::query("INSERT INTO events(invoice_id,event_type,actor,detail) VALUES(?,'sent','You','Invoice packet marked as sent to accounts payable')").bind(&id).execute(&state.db).await?;
+    if raw.status != "ready" {
+        tx.commit().await?;
+        return Err(AppError::BadRequest(
+            "This packet is not ready. Fix every preflight item before marking it sent.".into(),
+        ));
+    }
+    sqlx::query("UPDATE invoices SET status='waiting_on_ap' WHERE id=? AND workspace_id=? AND status='ready'")
+        .bind(&id)
+        .bind(&workspace_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO events(invoice_id,event_type,actor,detail) VALUES(?,'sent','You','Invoice packet marked as sent to accounts payable')").bind(&id).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO events(invoice_id,event_type,actor,detail) VALUES(?,'follow_up_due','AP-Ready Invoice',?)")
         .bind(&id)
-        .bind(format!("Follow up in {escalation_days} days if accounts payable has not replied"))
-        .execute(&state.db)
+        .bind(format!("Follow up in {} days if accounts payable has not replied", profile.escalation_days))
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(Json(
         serde_json::json!({"status":"waiting_on_ap","next_action":"Accounts payable confirms receipt"}),
     ))
@@ -756,9 +932,9 @@ async fn packet(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let (workspace_id, _) = workspace(&headers, &state.db).await?;
-    let profile: Profile = sqlx::query_as("SELECT freelancer_name,company_name,ap_email,billing_address,po_required,tax_required,bank_required,escalation_days FROM profiles WHERE workspace_id=?").bind(&workspace_id).fetch_one(&state.db).await?;
     let raw = fetch_raw(&state.db, &id, Some(&workspace_id)).await?;
-    let invoice = inflate(&state, raw, &profile)?;
+    let profile = profile_from_snapshot(&raw);
+    let invoice = inflate(&state, raw)?;
     let base = "https://ap-ready-invoice.sociobot.in";
     Ok(Json(serde_json::json!({
         "invoice": invoice,
@@ -829,9 +1005,10 @@ async fn public_status(
     State(state): State<AppState>,
     Path(token): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    cleanup_expired_demos(&state.db).await?;
     let raw = fetch_raw_by_token(&state.db, &token).await?;
-    let profile: Profile = sqlx::query_as("SELECT freelancer_name,company_name,ap_email,billing_address,po_required,tax_required,bank_required,escalation_days FROM profiles WHERE workspace_id=(SELECT workspace_id FROM invoices WHERE status_token=?)").bind(&token).fetch_one(&state.db).await?;
-    let invoice = inflate(&state, raw, &profile)?;
+    let profile = profile_from_snapshot(&raw);
+    let invoice = inflate(&state, raw)?;
     sqlx::query("INSERT INTO events(invoice_id,event_type,actor,detail) VALUES(?,'viewed','Accounts payable','Status page opened')").bind(&invoice.id).execute(&state.db).await?;
     Ok(Json(
         serde_json::json!({"number":invoice.number,"amount":money(invoice.amount_cents,&invoice.currency),"due_date":invoice.due_date,"status":invoice.status,"sender":profile.freelancer_name,"company":profile.company_name}),
@@ -843,6 +1020,7 @@ async fn public_status_action(
     Path(token): Path<String>,
     Json(input): Json<StatusAction>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    cleanup_expired_demos(&state.db).await?;
     let (status, label) = match input.action.as_str() {
         "received" => ("received", "Receipt confirmed"),
         "needs_changes" => ("needs_changes", "Change requested"),
@@ -858,11 +1036,8 @@ async fn public_status_action(
             "Keep the note under 500 characters.".into(),
         ));
     }
-    let id: Option<String> = sqlx::query_scalar("SELECT id FROM invoices WHERE status_token=?")
-        .bind(&token)
-        .fetch_optional(&state.db)
-        .await?;
-    let id = id.ok_or(AppError::NotFound)?;
+    let raw = fetch_raw_by_token(&state.db, &token).await?;
+    let id = raw.id;
     sqlx::query("UPDATE invoices SET status=? WHERE id=?")
         .bind(status)
         .bind(&id)
@@ -884,7 +1059,7 @@ async fn public_status_action(
     Ok(Json(serde_json::json!({"status":status,"message":label})))
 }
 
-#[derive(FromRow)]
+#[derive(Clone, FromRow)]
 struct RawInvoice {
     id: String,
     number: String,
@@ -899,20 +1074,41 @@ struct RawInvoice {
     status: String,
     status_token: String,
     created_at: String,
+    profile_id: String,
+    snapshot_freelancer_name: String,
+    snapshot_company_name: String,
+    snapshot_ap_email: String,
+    snapshot_billing_address: String,
+    snapshot_po_required: bool,
+    snapshot_tax_required: bool,
+    snapshot_bank_required: bool,
+    snapshot_escalation_days: i64,
 }
+
+const RAW_INVOICE_BY_WORKSPACE: &str = "SELECT id,number,amount_cents,currency,issue_date,due_date,description,po_number,tax_id_enc,bank_details_enc,status,status_token,created_at,profile_id,snapshot_freelancer_name,snapshot_company_name,snapshot_ap_email,snapshot_billing_address,snapshot_po_required,snapshot_tax_required,snapshot_bank_required,snapshot_escalation_days FROM invoices WHERE workspace_id=? ORDER BY created_at DESC";
+const RAW_INVOICE_BY_ID_AND_WORKSPACE: &str = "SELECT id,number,amount_cents,currency,issue_date,due_date,description,po_number,tax_id_enc,bank_details_enc,status,status_token,created_at,profile_id,snapshot_freelancer_name,snapshot_company_name,snapshot_ap_email,snapshot_billing_address,snapshot_po_required,snapshot_tax_required,snapshot_bank_required,snapshot_escalation_days FROM invoices WHERE id=? AND workspace_id=?";
+const RAW_INVOICE_BY_ID: &str = "SELECT id,number,amount_cents,currency,issue_date,due_date,description,po_number,tax_id_enc,bank_details_enc,status,status_token,created_at,profile_id,snapshot_freelancer_name,snapshot_company_name,snapshot_ap_email,snapshot_billing_address,snapshot_po_required,snapshot_tax_required,snapshot_bank_required,snapshot_escalation_days FROM invoices WHERE id=?";
+const RAW_INVOICE_BY_TOKEN: &str = "SELECT invoices.id,invoices.number,invoices.amount_cents,invoices.currency,invoices.issue_date,invoices.due_date,invoices.description,invoices.po_number,invoices.tax_id_enc,invoices.bank_details_enc,invoices.status,invoices.status_token,invoices.created_at,invoices.profile_id,invoices.snapshot_freelancer_name,invoices.snapshot_company_name,invoices.snapshot_ap_email,invoices.snapshot_billing_address,invoices.snapshot_po_required,invoices.snapshot_tax_required,invoices.snapshot_bank_required,invoices.snapshot_escalation_days FROM invoices JOIN workspaces ON workspaces.id=invoices.workspace_id WHERE invoices.status_token=? AND (workspaces.is_demo=0 OR workspaces.expires_at >= datetime('now'))";
 
 async fn insert_invoice(
     state: &AppState,
     workspace_id: &str,
     input: &InvoiceInput,
-    initial_status: &str,
+    profile: &Profile,
 ) -> Result<RawInvoice, AppError> {
     validate_invoice(input)?;
     let id = Uuid::new_v4().to_string();
     let status_token = secret_token();
-    sqlx::query("INSERT INTO invoices(id,workspace_id,number,amount_cents,currency,issue_date,due_date,description,po_number,tax_id_enc,bank_details_enc,status,status_token) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(&id).bind(workspace_id).bind(&input.number).bind(input.amount_cents).bind(&input.currency).bind(&input.issue_date).bind(&input.due_date).bind(&input.description).bind(&input.po_number).bind(encrypt(state,&input.tax_id)?).bind(encrypt(state,&input.bank_details)?).bind(initial_status).bind(&status_token).execute(&state.db).await.map_err(|e| if e.to_string().contains("UNIQUE") { AppError::BadRequest("That invoice number already exists. Use a different number.".into()) } else { AppError::Db(e) })?;
-    sqlx::query("INSERT INTO events(invoice_id,event_type,actor,detail) VALUES(?,'created','You','Invoice added')").bind(&id).execute(&state.db).await?;
+    let status = if make_checks(profile, input).iter().all(|check| check.ready) {
+        "ready"
+    } else {
+        "draft"
+    };
+    let mut tx = state.db.begin().await?;
+    sqlx::query("INSERT INTO invoices(id,workspace_id,number,amount_cents,currency,issue_date,due_date,description,po_number,tax_id_enc,bank_details_enc,status,status_token,profile_id,snapshot_freelancer_name,snapshot_company_name,snapshot_ap_email,snapshot_billing_address,snapshot_po_required,snapshot_tax_required,snapshot_bank_required,snapshot_escalation_days) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(&id).bind(workspace_id).bind(&input.number).bind(input.amount_cents).bind(&input.currency).bind(&input.issue_date).bind(&input.due_date).bind(&input.description).bind(&input.po_number).bind(encrypt(state,&input.tax_id)?).bind(encrypt(state,&input.bank_details)?).bind(status).bind(&status_token).bind(&profile.id).bind(&profile.freelancer_name).bind(&profile.company_name).bind(&profile.ap_email).bind(&profile.billing_address).bind(profile.po_required).bind(profile.tax_required).bind(profile.bank_required).bind(profile.escalation_days).execute(&mut *tx).await.map_err(|e| if e.to_string().contains("UNIQUE") { AppError::BadRequest("That invoice number already exists. Use a different number.".into()) } else { AppError::Db(e) })?;
+    sqlx::query("INSERT INTO events(invoice_id,event_type,actor,detail) VALUES(?,'created','You','Invoice added')").bind(&id).execute(&mut *tx).await?;
+    tx.commit().await?;
     fetch_raw(&state.db, &id, Some(workspace_id)).await
 }
 
@@ -922,18 +1118,44 @@ async fn fetch_raw(
     workspace: Option<&str>,
 ) -> Result<RawInvoice, AppError> {
     let row = if let Some(w) = workspace {
-        sqlx::query_as("SELECT id,number,amount_cents,currency,issue_date,due_date,description,po_number,tax_id_enc,bank_details_enc,status,status_token,created_at FROM invoices WHERE id=? AND workspace_id=?").bind(id).bind(w).fetch_optional(db).await?
+        sqlx::query_as(RAW_INVOICE_BY_ID_AND_WORKSPACE)
+            .bind(id)
+            .bind(w)
+            .fetch_optional(db)
+            .await?
     } else {
-        sqlx::query_as("SELECT id,number,amount_cents,currency,issue_date,due_date,description,po_number,tax_id_enc,bank_details_enc,status,status_token,created_at FROM invoices WHERE id=?").bind(id).fetch_optional(db).await?
+        sqlx::query_as(RAW_INVOICE_BY_ID)
+            .bind(id)
+            .fetch_optional(db)
+            .await?
     };
     row.ok_or(AppError::NotFound)
 }
 async fn fetch_raw_by_token(db: &SqlitePool, token: &str) -> Result<RawInvoice, AppError> {
-    sqlx::query_as("SELECT id,number,amount_cents,currency,issue_date,due_date,description,po_number,tax_id_enc,bank_details_enc,status,status_token,created_at FROM invoices WHERE status_token=?").bind(token).fetch_optional(db).await?.ok_or(AppError::NotFound)
+    sqlx::query_as(RAW_INVOICE_BY_TOKEN)
+        .bind(token)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)
 }
 
-fn inflate(state: &AppState, r: RawInvoice, p: &Profile) -> Result<Invoice, AppError> {
-    let input = InvoiceInput {
+fn profile_from_snapshot(r: &RawInvoice) -> Profile {
+    Profile {
+        id: r.profile_id.clone(),
+        freelancer_name: r.snapshot_freelancer_name.clone(),
+        company_name: r.snapshot_company_name.clone(),
+        ap_email: r.snapshot_ap_email.clone(),
+        billing_address: r.snapshot_billing_address.clone(),
+        po_required: r.snapshot_po_required,
+        tax_required: r.snapshot_tax_required,
+        bank_required: r.snapshot_bank_required,
+        escalation_days: r.snapshot_escalation_days,
+    }
+}
+
+fn input_from_raw(state: &AppState, r: &RawInvoice) -> Result<InvoiceInput, AppError> {
+    Ok(InvoiceInput {
+        profile_id: r.profile_id.clone(),
         number: r.number.clone(),
         amount_cents: r.amount_cents,
         currency: r.currency.clone(),
@@ -943,8 +1165,13 @@ fn inflate(state: &AppState, r: RawInvoice, p: &Profile) -> Result<Invoice, AppE
         po_number: r.po_number.clone(),
         tax_id: decrypt(state, &r.tax_id_enc)?,
         bank_details: decrypt(state, &r.bank_details_enc)?,
-    };
-    let checks = make_checks(p, &input);
+    })
+}
+
+fn inflate(state: &AppState, r: RawInvoice) -> Result<Invoice, AppError> {
+    let profile = profile_from_snapshot(&r);
+    let input = input_from_raw(state, &r)?;
+    let checks = make_checks(&profile, &input);
     let next_action = match r.status.as_str() {
         "draft" => "You fix the missing invoice details",
         "ready" => "You send the invoice packet",
@@ -969,6 +1196,8 @@ fn inflate(state: &AppState, r: RawInvoice, p: &Profile) -> Result<Invoice, AppE
         status: r.status,
         status_token: r.status_token,
         created_at: r.created_at,
+        profile_id: r.profile_id,
+        profile,
         checks,
         next_action,
     })
@@ -992,7 +1221,7 @@ fn make_checks(p: &Profile, i: &InvoiceInput) -> Vec<Check> {
         Check {
             key: "payer",
             label: "AP recipient and billing address",
-            ready: p.ap_email.contains('@') && !p.billing_address.trim().is_empty(),
+            ready: valid_email(&p.ap_email) && !p.billing_address.trim().is_empty(),
             help: "Add the finance email and billing address.",
         },
         Check {
@@ -1028,8 +1257,48 @@ fn make_checks(p: &Profile, i: &InvoiceInput) -> Vec<Check> {
     ]
 }
 
+fn validate_profile(profile: &ProfileInput) -> Result<(), AppError> {
+    if profile.freelancer_name.trim().is_empty() || profile.company_name.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "Enter your business name and the client company.".into(),
+        ));
+    }
+    if !valid_email(&profile.ap_email) {
+        return Err(AppError::BadRequest(
+            "Enter a complete finance email address.".into(),
+        ));
+    }
+    if profile.billing_address.trim().is_empty() {
+        return Err(AppError::BadRequest("Enter the billing address.".into()));
+    }
+    if !(1..=30).contains(&profile.escalation_days) {
+        return Err(AppError::BadRequest(
+            "Set follow-up between 1 and 30 days.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn valid_email(value: &str) -> bool {
+    let value = value.trim();
+    let Some((local, domain)) = value.rsplit_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !value.chars().any(char::is_whitespace)
+}
+
 fn validate_invoice(i: &InvoiceInput) -> Result<(), AppError> {
-    if i.number.trim().is_empty() || i.number.len() > 50 {
+    if i.profile_id.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "Choose a saved client AP profile before running preflight.".into(),
+        ));
+    }
+    if i.number.trim().is_empty() || i.number.chars().count() > 50 {
         return Err(AppError::BadRequest(
             "Enter an invoice number under 50 characters.".into(),
         ));
@@ -1053,7 +1322,7 @@ fn validate_invoice(i: &InvoiceInput) -> Result<(), AppError> {
             "The due date must be on or after the issue date.".into(),
         ));
     }
-    if i.description.trim().is_empty() || i.description.len() > 500 {
+    if i.description.trim().is_empty() || i.description.chars().count() > 500 {
         return Err(AppError::BadRequest(
             "Describe the work in 500 characters or fewer.".into(),
         ));
@@ -1141,6 +1410,7 @@ mod tests {
     #[test]
     fn checks_required_po() {
         let p = Profile {
+            id: "profile".into(),
             freelancer_name: "A".into(),
             company_name: "B".into(),
             ap_email: "a@b.com".into(),
@@ -1151,6 +1421,7 @@ mod tests {
             escalation_days: 5,
         };
         let i = InvoiceInput {
+            profile_id: "profile".into(),
             number: "1".into(),
             amount_cents: 100,
             currency: "USD".into(),
@@ -1172,6 +1443,7 @@ mod tests {
     #[test]
     fn validates_dates() {
         let mut i = InvoiceInput {
+            profile_id: "profile".into(),
             number: "1".into(),
             amount_cents: 100,
             currency: "USD".into(),
@@ -1202,6 +1474,7 @@ mod tests {
     #[test]
     fn preflight_never_marks_malformed_dates_ready() {
         let p = Profile {
+            id: "profile".into(),
             freelancer_name: "A".into(),
             company_name: "B".into(),
             ap_email: "a@b.com".into(),
@@ -1212,6 +1485,7 @@ mod tests {
             escalation_days: 5,
         };
         let i = InvoiceInput {
+            profile_id: "profile".into(),
             number: "1".into(),
             amount_cents: 100,
             currency: "USD".into(),

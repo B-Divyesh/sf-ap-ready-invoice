@@ -2,6 +2,7 @@ node_modules/
 target/
 data/
 .test-data/
+.test-data-playwright-*
 .verify-data/
 .load-data/
 graphify-out/
