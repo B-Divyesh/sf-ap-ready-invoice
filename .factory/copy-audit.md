@@ -1,6 +1,6 @@
 # Landing-page copy audit
 
-Audit date: 2026-09-02. Words are split on spaces. UI labels and proper names are included where they form a sentence.
+Audit date: 2026-09-06. Words are split on spaces. UI labels and proper names are included where they form a sentence.
 
 | Copy | Words | Result |
 |---|---:|---|
@@ -24,6 +24,8 @@ Audit date: 2026-09-02. Words are split on spaces. UI labels and proper names ar
 | It never claims to be your client's AP system. | 9 | Pass |
 | Sensitive invoice fields are encrypted on the server. | 8 | Pass |
 | You can export the receipt trail as CSV. | 8 | Pass |
+| Demo — sample data, nothing is saved. | 7 | Pass |
+| This separate demo expires in 24 hours. | 7 | Pass |
 
 No sentence exceeds 22 words. No sentence contains a banned term.
 
@@ -39,4 +41,4 @@ No sentence exceeds 22 words. No sentence contains a banned term.
 | Saved payer requirements | client AP profile |
 | Person or team responsible now | next action |
 
-Catalog description: **Check corporate AP requirements, send an invoice packet, and see who has the next action.** (88 characters)
+Catalog description: **Check corporate AP requirements, send an invoice packet, and see who acts next.** (79 characters)

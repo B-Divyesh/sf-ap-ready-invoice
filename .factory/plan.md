@@ -1,9 +1,10 @@
 # AP-Ready Invoice venture plan
 
-**Plan status:** 2026-09-05 audit. M1 is **not accepted**. This is a planning
+**Plan status:** 2026-09-06 repair candidate. M1 is **not accepted** until an
+independent verifier checks the deployed candidate. This is a planning
 document, not a release approval. It is based on the researched brief, the
-current `main` implementation at `c97ff30`, both independent verification
-reports, the current local test run, and a fresh production demo probe.
+implementation candidate `8d395f7`, documentation baseline `c97ff30`, both
+independent verification reports, and the current local test run.
 
 ## 1. Product contract
 
@@ -49,25 +50,23 @@ result until a consented pilot establishes the baseline and outcome.
 
 ### Milestone assessment
 
-There is no accepted venture milestone. The current product is an **M1
-candidate with a working single-invoice demo path**, not a released M1. The
-current deployment presents a polished lander, demo, preflight, packet, public
-status page, CSV export, and local SQLite storage. It does not satisfy the
-core workflow once a workspace has multiple invoices, and it does not provide
-the brief's reusable client profiles.
+There is no accepted venture milestone. The current product is an **M1 repair
+candidate**, not a released M1. Candidate `8d395f7` adds multiple client
+profiles, invoice snapshots, selected-invoice actions, complete demo expiry,
+and repaired minor findings. It still needs a deployed independent check.
 
 | Area | Status | Evidence and limit |
 |---|---|---|
-| Landing, original visual system, demo entry point | Demonstrated | The broadsheet design, one-click `/demo`, metadata, privacy/terms, and 390px checks exist. The local 21-browser-test gate passes. This is not an M1 acceptance on its own. |
-| Single-invoice preflight → packet → send → recipient receipt → CSV | Demonstrated only | A fresh 2026-09-05 live demo returned 7/7 ready, packet data, a 200 send, and a 200 status page. It proves one sample flow, not production tenant isolation or all invoices. |
-| Correct action on the selected invoice | Failed / release blocker | In the live probe, after selecting `MVS-1042`, **Open invoice packet** opened the newly created `PLAN-LIVE-SECOND` invoice. The frontend dispatches actions using `dashboardData.invoices[0]`. |
-| Preflight prevents invalid handoff | Failed / release blocker | New valid invoices are inserted as `draft`; changing the mutable profile can leave failed checks with `ready` status, and send does not recompute checks. Independent verification reproduced both. |
-| Reusable client AP profiles and historical packet accuracy | Failed / release blocker | `profiles.workspace_id` is the primary key: there is one mutable profile per workspace and no invoice profile snapshot. Editing it rewrites a previous packet. README's “Reusable client AP profiles” is currently an unlisted, false claim. |
-| Demo isolation and 24-hour expiry | Partially implemented, claim failed | The demo has a separate random key and `is_demo`/expiry columns, but expired workspaces cannot reset in the UI and the public status link remains reachable. The current test only asserts a future expiry timestamp. |
+| Landing, original visual system, demo entry point | Locally demonstrated | The broadsheet design, one-click `/demo`, metadata, privacy/terms, and 390px checks exist. The local 14-browser-test gate passes. This is not an M1 acceptance on its own. |
+| Preflight → packet → send → recipient receipt → CSV | Locally demonstrated | Claim tests cover valid and invalid invoice flows, packet, send, recipient update, and selected-invoice CSV. Deployed verification remains required. |
+| Correct action on the selected invoice | Repaired locally | All workspace actions resolve the selected invoice ID. The two-invoice claim covers send, status copy, email copy, packet, print, and CSV selection. |
+| Preflight prevents invalid handoff | Repaired locally | Create and update calculate status from the selected profile snapshot. Send recomputes checks inside its transaction and returns 400 while any requirement fails. |
+| Reusable client AP profiles and historical packet accuracy | Repaired locally | `client_profiles` supports multiple profiles. Invoices persist their own recipient and requirement snapshot; editing a profile cannot rewrite an earlier packet. |
+| Demo isolation and 24-hour expiry | Repaired locally | Demo rows are cleaned on expiry, API responses are no-store, expiry leaves the reset banner available, and expired demo status reads/writes return 404. The claim exercises this with a debug-only expiry fixture. |
 | Bank/tax storage encryption | Locally demonstrated | ChaCha20-Poly1305 with a generated persisted key is implemented and `@claim:encrypted-fields` passes locally. This is not a security audit and does not establish account or tenant isolation. |
 | No analytics/tracking | Locally demonstrated | `@claim:no-tracking` passes from a clean local demo context; the frontend has no CDN script/font. This does not make a broader “no data leaves your device” promise, which would be false for this backend product. |
-| Accessibility and quality baseline | Partial | Current local tests pass, including serious/critical Axe checks. Independent verification found keyboard focus lost when opening the invoice form and one moderate landmark violation. Those repairs remain in M1. |
-| Security headers and rate limit | Partial / live verification failed | CSP, nosniff, referrer policy, permissions policy, frame denial, and cache policies were observed live. HSTS is absent. The source limiter is 40 API requests per forwarded IP/second, and the local rate test passes; a fresh 120-request live `/api/demo` probe returned 120 HTTP 200 responses and no `Retry-After`, so live enforcement is not accepted. |
+| Accessibility and quality baseline | Repaired locally | The invoice form focuses its visible number field, the landmark misuse is removed, and full mobile Axe has no violations. The landing also has no serious/critical Axe findings. |
+| Security headers and rate limit | Repaired locally; live check pending | HSTS and API `no-store` are sent. The browser test receives 429 plus `Retry-After` after 40 requests using one forwarded IP. The production discrepancy must be checked after deployment. |
 | Billing, subscription, paid gate | Not implemented | `/pricing` honestly says purchases are unavailable. There is no $19 checkout, entitlement, license restore, or paid boundary. The previous checkout registration returned 404; that is an external dependency, not a shipped feature. |
 | Sign-in and tenant isolation | Not implemented | Browser-held opaque workspace tokens are not identities. No sign-in, tenant model, cross-tenant proof, account export/delete, or production access-control verification exists. A demo does not prove these properties. |
 | Messaging, HMRC | Not implemented and not planned | The app copies a prepared email; it does not send email or messages. There is no HMRC integration. Neither may be described as available. |
@@ -109,10 +108,11 @@ case. The public README must be narrowed or repaired with a tested
   is persisted beside it. The current deployment history records the
   Azure-Files single-writer/rolling-cutover constraint; do not replace that
   operational evidence with a health-only check.
-- Current tables are `workspaces`, one `profiles` row per workspace,
-  `invoices`, and `events`. `tax_id_enc` and `bank_details_enc` use
-  ChaCha20-Poly1305; status tokens and workspace tokens are stored as lookup
-  values.
+- Current tables are `workspaces`, legacy `profiles`, `client_profiles`,
+  `invoices`, and `events`. New invoices store an immutable client-profile
+  snapshot alongside encrypted sensitive fields. `tax_id_enc` and
+  `bank_details_enc` use ChaCha20-Poly1305; status tokens and workspace tokens
+  are stored as lookup values.
 - Real and demo browser state use different localStorage keys:
   `apri:workspace` and `demo:apri:workspace`. Demo rows carry `is_demo=1` and
   `expires_at`. They share the same database and schema.
@@ -155,8 +155,9 @@ ephemeral tenant/namespace and must never read a real tenant.
 
 ### M1 — Repair and accept the AP handoff core
 
-**Status:** next milestone; currently incomplete and blocked only by product
-repair/verification, not external billing or sign-in access.
+**Status:** implementation candidate `8d395f7` is ready for deployed
+verification. M1 remains incomplete until that independent result is PASS;
+there is no billing or sign-in blocker for this repair.
 
 **Scope and screens:** `/`, `/demo`, `/app`, `/packet/:invoiceId`,
 `/status/:token`, client profile editor/index, and the existing 404/legal
@@ -168,7 +169,7 @@ select an invoice, run its actual profile snapshot preflight, create the
 correct packet/email/export/status link, and use an expired demo recovery
 without exposing expired sample status data.
 
-**Required repairs:**
+**Required repairs (implemented in candidate; verify independently):**
 
 1. Dispatch every action from the selected invoice ID, never index zero. Test
    packet, send, email copy, status copy, and CSV with at least two invoices.
