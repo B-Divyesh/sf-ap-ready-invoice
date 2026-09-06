@@ -2,12 +2,15 @@
 
 ## Status
 
-Current venture milestone: M1 repair candidate, deployed and ready for
-independent acceptance verification. It is not an accepted M1 result yet.
+Current venture milestone: M1 acceptance. Independent verification 3 found a
+live S1 rate-limit failure, so M1 is **not accepted**.
 
 - Implementation commit: `8d395f7e8d49766f0cf579c8bb65b87d58f4b7cd`
-- Documentation/deployment commit: `4ee00f0c8737dda0121d4e4bad63427659612ddc`
-- Live health build SHA: `4ee00f0c8737dda0121d4e4bad63427659612ddc`
+- Candidate deployment documentation commit:
+  `4ee00f0c8737dda0121d4e4bad63427659612ddc`
+- Final pre-verification documentation commit:
+  `775a6051d6f32e3fcd694912100d7da706e12d7a`
+- Live health build SHA: `775a6051d6f32e3fcd694912100d7da706e12d7a`
 - Active product revision: `sf-ap-ready-invoice--0000014`, healthy, one
   running replica. Its scale contract remains `minReplicas: 1`,
   `maxReplicas: 1`.
@@ -16,6 +19,23 @@ The job is to prepare an invoice packet corporate AP can accept. The audience
 is freelancers and small studios paid through corporate finance. On the first
 screen, the first action is **Try it with sample data**; it opens a checked
 invoice and its next action.
+
+## Latest independent verification
+
+Report: `.factory/verification-3.md`.
+
+- **FAIL:** two live one-client bursts (50 and 160 API requests) received no
+  HTTP 429 or `Retry-After`. Local rate-limit coverage passes, making this a
+  deployed-runtime mismatch. M1 cannot be accepted until the repaired live
+  origin is independently retested.
+- The clean local quality gate and all nine claim commands passed. Fresh
+  desktop and phone checks also passed for selected-invoice actions, profile
+  snapshots, preflight, reset, status updates, accessibility, legal routes,
+  designed 404, HSTS, and release-only-`PORT` restart persistence.
+- The live health endpoint now reports documentation SHA
+  `775a6051d6f32e3fcd694912100d7da706e12d7a`. Candidate implementation
+  `8d395f7` remains the reviewed runtime source: later commits change docs
+  only, and local/live index HTML hashes matched.
 
 ## What changed
 
