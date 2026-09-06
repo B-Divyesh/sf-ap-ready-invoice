@@ -1,7 +1,7 @@
 # AP-Ready Invoice venture plan
 
-**Plan status:** 2026-09-06 repair candidate. M1 is **not accepted** until an
-independent verifier checks the deployed candidate. This is a planning
+**Plan status:** 2026-09-06 deployed repair candidate. M1 is **not accepted**
+until an independent verifier checks the deployed candidate. This is a planning
 document, not a release approval. It is based on the researched brief, the
 implementation candidate `8d395f7`, documentation baseline `c97ff30`, both
 independent verification reports, and the current local test run.
@@ -155,9 +155,10 @@ ephemeral tenant/namespace and must never read a real tenant.
 
 ### M1 — Repair and accept the AP handoff core
 
-**Status:** implementation candidate `8d395f7` is ready for deployed
-verification. M1 remains incomplete until that independent result is PASS;
-there is no billing or sign-in blocker for this repair.
+**Status:** implementation candidate `8d395f7` is deployed in documentation
+build `4ee00f0` and ready for independent verification. M1 remains incomplete
+until that result is PASS; there is no billing or sign-in blocker for this
+repair.
 
 **Scope and screens:** `/`, `/demo`, `/app`, `/packet/:invoiceId`,
 `/status/:token`, client profile editor/index, and the existing 404/legal

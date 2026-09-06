@@ -4,9 +4,9 @@
 
 Implementation candidate: `8d395f7e8d49766f0cf579c8bb65b87d58f4b7cd`.
 
-M1 is not accepted until the deployed candidate has an independent verification
-PASS. This handoff records the repair before deployment evidence is added to
-the latest handoff.
+The candidate is deployed in documentation build `4ee00f0`. M1 is not accepted
+until an independent verification PASS. The full live evidence is in the
+latest handoff.
 
 ## What changed
 
